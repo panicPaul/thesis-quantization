@@ -1,9 +1,9 @@
 """ Some data classes for the thesis project. """
 
-import torch
-from jaxtyping import Float, Int
 from typing import NamedTuple
 
+import torch
+from jaxtyping import Float, Int
 
 # ==================================================================================== #
 #                                 Data Classes                                         #
@@ -101,19 +101,6 @@ class SingleFrameData(NamedTuple):
     se3_transform: UnbatchedSE3Transform
     sequence_id: Int[torch.Tensor, ""]
     time_step: Int[torch.Tensor, ""]
-
-
-class UnbatchedQuantizationData(NamedTuple):
-    """
-    Args:
-        flame_params (FlameParams): Flame parameters object.
-        se3_transform (SE3Transform): SE3 transform object.
-        audio_features (torch.Tensor): Audio features tensor. Shape: `(time, 1024)`.
-    """
-
-    flame_params: UnbatchedFlameParams
-    se3_transforms: UnbatchedSE3Transform
-    audio_features: Float[torch.Tensor, "time 1024"]
 
 
 class QuantizationData(NamedTuple):

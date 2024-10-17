@@ -66,5 +66,5 @@ dependencies = [
     # don't seem to be pep 508 compliant
     "moviepy",
     "pydub",
-    'open3d',   
+    'open3d',
     ]

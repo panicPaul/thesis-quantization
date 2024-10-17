@@ -1,16 +1,15 @@
 """ Single sequence datasets. """
 
-from torch.utils.data import Dataset
-
-from thesis.constants import TRAIN_CAMS, DATA_DIR_NERSEMBLE
-
-import thesis.data_management.data_classes as dc
-from thesis.data_management.sequence_manager import (
-    SequenceManager,
-    MultiSequenceManager,
-)
 import torch
 from jaxtyping import Float
+from torch.utils.data import Dataset
+
+import thesis.data_management.data_classes as dc
+from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS
+from thesis.data_management.sequence_manager import (
+    MultiSequenceManager,
+    SequenceManager,
+)
 
 # ==================================================================================== #
 #                              Single Sequence Dataset                                 #

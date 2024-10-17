@@ -44,9 +44,9 @@ repos:
         language: system
         types: [jupyter]
 
-      - id: build-sphinx-docs
-        name: Build Sphinx Documentation
-        entry: bash -c 'cd docs && make html'
-        language: system
-        pass_filenames: false
-        always_run: true
+      #- id: build-sphinx-docs
+      #  name: Build Sphinx Documentation
+      #  entry: bash -c 'cd docs && make html'
+      #  language: system
+      #  pass_filenames: false
+      #  always_run: true

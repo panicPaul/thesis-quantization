@@ -33,6 +33,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 import torch.nn as nn
+from einops import rearrange
 from jaxtyping import Float
 
 from thesis.constants import (
@@ -40,11 +41,15 @@ from thesis.constants import (
     FLAME_MESH_PATH,
     FLAME_MODEL_PATH,
     FLAME_PARTS_PATH,
-    WORLD_TRANSFORM_CUDA,
 )
-from thesis.external.flame.pytorch3d_load_obj import load_obj
+from thesis.data_management import FlameParams, UnbatchedFlameParams
+from thesis.flame.pytorch3d_load_obj import load_obj
 
-from .lbs import blend_shapes, lbs
+USE_CUSTOM_LBS = False
+if USE_CUSTOM_LBS:
+    from .lbs import blend_shapes, lbs
+else:
+    from smplx.lbs import lbs
 
 
 def to_tensor(array, dtype=torch.float32):
@@ -263,52 +268,35 @@ class FlameHead(nn.Module):
     # ==================================== Forward ===================================
 
     def forward(
-        self,
-        shape: Float[torch.Tensor, "batch 300"],
-        expr: Float[torch.Tensor, "batch 100"],
-        neck: Float[torch.Tensor, "batch 3"],
-        jaw: Float[torch.Tensor, "batch 3"],
-        eye: Float[torch.Tensor, "batch 6"],
-        scale: Float[torch.Tensor, "batch 1"],
-        rotation: Float[torch.Tensor, "batch 3 3"] | None = None,
-        translation: Float[torch.Tensor, "batch 3"] | None = None,
-        apply_se3_transform: bool = True,
-    ) -> Float[torch.Tensor, "batch num_vertices 3"]:
+        self, params: FlameParams | UnbatchedFlameParams
+    ) -> (
+        Float[torch.Tensor, "batch time num_vertices 3"]
+        | Float[torch.Tensor, "time num_vertices 3"]
+    ):
         """
-        Get the vertices for the provided flame parameters.
-
         Args:
-            shape (torch.Tensor): The shape parameters of the FLAME model. Has
-                shape (batch, 300).
-            expr (torch.Tensor): The expression parameters of the FLAME model.
-                Has shape (batch, 100).
-            neck (torch.Tensor): The neck rotation of the FLAME model. Has
-                shape (batch, 3).
-            jaw (torch.Tensor): The jaw rotation of the FLAME model. Has
-                shape (batch, 3).
-            eye (torch.Tensor): The eye rotation of the FLAME model. Has
-                shape (batch, 6).
-            scale (torch.Tensor): The scale of the FLAME model. Has shape
-            rotation (torch.Tensor | None): The rotation of the FLAME model. Must be
-                provided if `apply_se3_transform` is True. Has shape (batch, 3, 3).
-            translation (torch.Tensor | None): The translation of the FLAME model.
-                Must be provided if `apply_se3_transform` is True. Has shape
-                (batch, 3).
-            apply_se3_transform (bool): If True, the rotation and translation
-                will not be applied to the vertices. Defaults to True.
+            params (FlameParams): The flame parameters.
 
         Returns:
-            torch.Tensor: The vertices of the FLAME model. Has shape
-                (batch, num_vertices, 3).
+            Float[torch.Tensor, "batch time num_vertices 3"]: The vertices.
         """
 
-        if apply_se3_transform:
-            assert (
-                rotation is not None
-            ), "Rotation must be provided if apply_se3_transform is True."
-            assert (
-                translation is not None
-            ), "Translation must be provided if apply_se3_transform is True."
+        is_batched = True if params.shape.ndim == 3 else False
+        if is_batched:
+            bs, t = params.shape.shape[:2]
+            shape = rearrange(params.shape, "batch time f -> (batch time) f")
+            expr = rearrange(params.expr, "batch time f -> (batch time) f")
+            neck = rearrange(params.neck, "batch time f -> (batch time) f")
+            jaw = rearrange(params.jaw, "batch time f -> (batch time) f")
+            eye = rearrange(params.eye, "batch time f -> (batch time) f")
+            scale = rearrange(params.scale, "batch time f-> (batch time) f")
+        else:
+            shape = params.shape
+            expr = params.expr
+            neck = params.neck
+            jaw = params.jaw
+            eye = params.eye
+            scale = params.scale
 
         batch_size = shape.shape[0]
 
@@ -318,36 +306,39 @@ class FlameHead(nn.Module):
         template_vertices = self.v_template.unsqueeze(0).expand(batch_size, -1, -1)
 
         # Add shape contribution
-        v_shaped = template_vertices + blend_shapes(betas, self.shapedirs)
-
-        vertices, _, _ = lbs(
-            full_pose,
-            v_shaped,
-            self.posedirs,
-            self.J_regressor,
-            self.parents,
-            self.lbs_weights,
-            dtype=self.dtype,
-        )
+        if USE_CUSTOM_LBS:
+            v_shaped = template_vertices + blend_shapes(betas, self.shapedirs)
+            vertices, _, _ = lbs(
+                full_pose,
+                v_shaped,
+                self.posedirs,
+                self.J_regressor,
+                self.parents,
+                self.lbs_weights,
+                dtype=self.dtype,
+            )
+        else:
+            vertices, _ = lbs(
+                betas,
+                full_pose,
+                template_vertices,
+                self.shapedirs,
+                self.posedirs,
+                self.J_regressor,
+                self.parents,
+                self.lbs_weights,
+            )
 
         # add scale
         vertices = vertices * scale.unsqueeze(-1)
 
-        # apply SE(3) transform
-        if apply_se3_transform:
-            rigid_transform = (
-                torch.eye(4, device=rotation.device)
-                .unsqueeze(0)
-                .repeat(batch_size, 1, 1)
+        if is_batched:
+            vertices = rearrange(
+                vertices,
+                "(batch time) num_vertices f -> batch time num_vertices f",
+                batch=bs,
+                time=t,
             )
-            rigid_transform[:, :3, :3] = rotation
-            rigid_transform[:, :3, 3] = translation
-            vertices = torch.cat([vertices, torch.ones_like(vertices[..., :1])], dim=-1)
-            vertices = torch.bmm(vertices, rigid_transform.transpose(1, 2))[:, :, :3]
-        world_transform = WORLD_TRANSFORM_CUDA[:3, :3]  # shape: (3, 3)
-        world_transform = world_transform.unsqueeze(0).expand(batch_size, -1, -1)
-        vertices = torch.bmm(vertices, world_transform.permute(0, 2, 1))
-
         return vertices
 
     # ==================================== ADD TEETH ===================================

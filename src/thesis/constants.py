@@ -29,3 +29,14 @@ SERIALS = sorted(
 )
 TRAIN_SEQUENCES = list(range(3, 80))
 TEST_SEQUENCES = list(range(80, 102))
+
+# flame constants
+FLAME_MESH_PATH = "assets/flame/head_template_mesh.obj"
+""" Path to the FLAME head template mesh. """
+FLAME_LMK_PATH = "assets/flame/landmark_embedding_with_eyes.npy"
+""" Path to the FLAME landmark embedding. """  # do I even need this?
+# can be downloaded from https://flame.is.tue.mpg.de/download.php
+FLAME_MODEL_PATH = "assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw rotation)
+""" Path to the FLAME model. """
+FLAME_PARTS_PATH = "assets/flame/FLAME_masks.pkl"  # FLAME Vertex Masks
+""" Path to the FLAME parts. """

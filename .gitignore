@@ -6,6 +6,7 @@ outputs/*
 assets/flame/flame2023.pkl
 nohup.out
 sound_input/*
+tmp
 
 
 # ------------ General Python ------------

@@ -3,7 +3,6 @@
 import json
 import os
 
-
 import numpy as np
 import open3d as o3
 import soundfile as sf
@@ -11,17 +10,16 @@ import torch
 from dreifus.camera import CameraCoordinateConvention, PoseType
 from dreifus.matrix import Intrinsics, Pose
 from jaxtyping import Float
-from thesis.data_management.primitives_loader import (
-    ImageSequenceLoader,
-    SegmentationMaskSequenceLoader,
-    FlameParamsSequenceLoader,
-    SE3TransformSequenceLoader,
-    AudioFeaturesSequenceLoader,
-)
 
+from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS
 from thesis.data_management.data_classes import SingleFrameData
-from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS, TRAIN_SEQUENCES
-
+from thesis.data_management.primitives_loader import (
+    AudioFeaturesSequenceLoader,
+    FlameParamsSequenceLoader,
+    ImageSequenceLoader,
+    SE3TransformSequenceLoader,
+    SegmentationMaskSequenceLoader,
+)
 
 # ==================================================================================== #
 #                                 Sequence Manager                                     #
@@ -45,8 +43,8 @@ class SequenceManager:
         Args:
             sequence (str): Sequence name.
             data_dir (str): Directory containing the data.
-            image_downsampling_factor (int | float): Downsampling factor for the images, masks
-                and intrinsics.
+            image_downsampling_factor (int | float): Downsampling factor for the images,
+                masks and intrinsics.
             cameras (list[int]): List of camera IDs to use.
         """
         if isinstance(sequence, int):

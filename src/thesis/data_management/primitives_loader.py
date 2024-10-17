@@ -1,26 +1,23 @@
-""" 
-Some data, such as images does not exist as one contiguous array, but rather as a 
+"""
+Some data, such as images does not exist as one contiguous array, but rather as a
 collection of files on disk. In this case, we need a class to load the data from disk
-and provide it in a format that can be used by the rest of the code. 
+and provide it in a format that can be used by the rest of the code.
 """
 
 import json
 import os
 
-
 import numpy as np
 import torch
+from einops import repeat
 from jaxtyping import Float
 from PIL import Image
+
+from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS
 from thesis.data_management.data_classes import (
     UnbatchedFlameParams,
     UnbatchedSE3Transform,
 )
-from einops import repeat
-
-
-from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS
-
 
 # ==================================================================================== #
 #                                 Images                                               #
@@ -359,7 +356,6 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
 
 
 class FlameParamsSequenceLoader(_SequenceLoader):
-
     def __init__(
         self,
         sequence: str | int,
@@ -429,7 +425,6 @@ class FlameParamsSequenceLoader(_SequenceLoader):
 
 
 class SE3TransformSequenceLoader(_SequenceLoader):
-
     def __init__(
         self,
         sequence: str | int,
@@ -492,7 +487,6 @@ class SE3TransformSequenceLoader(_SequenceLoader):
 
 
 class AudioFeaturesSequenceLoader(_SequenceLoader):
-
     def __init__(
         self,
         sequence: str | int,
