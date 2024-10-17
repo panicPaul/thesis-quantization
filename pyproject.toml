@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["thesis*"]
+
+[project]
+name = "thesis"
+version = "0.1.0"
+authors = [
+    {name = "Paul Schlack", email = "paul.schlack@tum.de" },
+    ]
+description = "Speech-driven Face Synthesis with 3D Gaussian Splatting for my master thesis"
+readme = "README.md"
+dependencies = [
+    # general dependencies
+    "torch",
+    "pillow",
+    "tqdm",
+    "numpy",
+    "dreifus",
+    "gsplat==1.4",
+    "jaxtyping",
+    "beartype",
+    "pre-commit",
+    "jupyter",
+    "nbconvert",
+    "omegaconf",
+    "tensorboard",
+    "torchmetrics",
+    "interrogate",
+    "iopath",
+    "vector-quantize-pytorch",
+    "lightning",
+    "viser",
+    # gsplat trainer
+    "imageio",
+    #"nerfview",
+    "viser",
+    "scikit-learn",
+    # gsplat compression
+    #"cupy-cuda11x"
+    "cupy-cuda12x",
+    "torchpq",
+    # documentation
+    "sphinx",
+    "furo",
+    "sphinx_mdinclude",
+    "sphinx-copybutton",
+    # audio processing
+    "librosa",
+    "noisereduce",
+    "soundfile",
+    "transformers",
+    # pyvista
+    "numpy",
+    "pillow",
+    "scooby",
+    "pooch",
+    "imageio",
+    "matplotlib",
+    "k3d",
+    # missing: all of the git dependencies (chumpy, nerfview, plas) they
+    # don't seem to be pep 508 compliant
+    "moviepy",
+    "pydub",
+    'open3d',   
+    ]

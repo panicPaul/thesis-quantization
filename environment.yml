@@ -1,0 +1,36 @@
+name: thesis_quantization
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+  - nvidia/label/cuda-12.4.0
+  - nvidia
+
+# TODO: move all dependencies that can be moved to pip to pip
+dependencies:
+  #- python=3.12.0
+  - python=3.11.9
+  - pytorch
+  - torchaudio
+  - torchvision
+  - cudatoolkit
+  - cuda-nvcc
+  - cuda-cudart-dev
+  - gcc=11.*
+  - gxx=11.*
+  #- faiss-gpu=1.8.0
+
+  #conda install menpo::osmesa
+
+  - pip:
+    # github dependencies
+    - "git+https://github.com/mattloper/chumpy"
+    - "git+https://github.com/panicPaul/nerfview.git"
+    - "git+https://github.com/panicPaul/PLAS.git"
+
+    # other non standard dependencies
+    #- "pyvista --no-deps"
+    #- '--no-cache-dir --extra-index-url https://wheels.vtk.org vtk-egl'
+
+    # project itself installs the dependencies
+    - -e .
