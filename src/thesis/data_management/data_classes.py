@@ -1,9 +1,10 @@
 """ Some data classes for the thesis project. """
 
-from typing import NamedTuple
+from typing import NamedTuple, TypedDict
 
 import torch
 from jaxtyping import Float, Int
+from torch import nn
 
 # ==================================================================================== #
 #                                 Data Classes                                         #
@@ -38,6 +39,25 @@ class SE3Transform(NamedTuple):
 
     rotation: Float[torch.Tensor, "batch time 3 3"]
     translation: Float[torch.Tensor, "batch time 3"]
+
+
+class GaussianSplats(TypedDict):
+    """
+    Args:
+        means (nn.Parameter): Means Shape: `(num_splats, 3)`.
+        scales (nn.Parameter): Log scales Shape: `(num_splats, 3)`.
+        quats (nn.Parameter): Unnormalized quaternions Shape: `(num_splats, 4)`.
+        opacities (nn.Parameter): Opacity logits Shape: `(num_splats,)`.
+        colors (nn.Parameter): Colors Shape: `(num_splats, 3)`.
+        feature (nn.Parameter): Features Shape: `(num_splats, feature_dim)`.
+    """
+
+    means: Float[nn.Parameter, "n_splats 3"]
+    scales: Float[nn.Parameter, "n_splats 3"]
+    quats: Float[nn.Parameter, "n_splats 4"]
+    opacities: Float[nn.Parameter, "n_splats"]
+    colors: Float[nn.Parameter, "n_splats 3"]
+    features: Float[nn.Parameter, "n_splats feature_dim"]
 
 
 # ==================================================================================== #
@@ -86,7 +106,7 @@ class SingleFrameData(NamedTuple):
         image (torch.Tensor): Image tensor. Shape: `(cam, H, W, 3)`.
         mask (torch.Tensor): Mask tensor. Shape: `(cam, H, W)`.
         intrinsics (torch.Tensor): Intrinsics tensor. Shape: `(cam, 3, 3)`.
-        extrinsics (torch.Tensor): Extrinsics tensor. Shape: `(cam, 4, 4)`.
+        world_2_cam (torch.Tensor): World2Cam tensor. Shape: `(cam, 4, 4)`.
         color_correction (torch.Tensor): Color correction tensor. Shape: `(cam, 3, 3)`.
         se3_transform (SE3Transform): SE3 transform object.
         sequence_id (torch.Tensor): Sequence ID tensor. Shape: `(cam,)`.
@@ -96,7 +116,7 @@ class SingleFrameData(NamedTuple):
     image: Float[torch.Tensor, "cam H W 3"]
     mask: Float[torch.Tensor, "cam H W"]
     intrinsics: Float[torch.Tensor, "3 3"]
-    extrinsics: Float[torch.Tensor, "cam 4 4"]
+    world_2_cam: Float[torch.Tensor, "cam 4 4"]
     color_correction: Float[torch.Tensor, "cam 3 3"]
     se3_transform: UnbatchedSE3Transform
     sequence_id: Int[torch.Tensor, ""]

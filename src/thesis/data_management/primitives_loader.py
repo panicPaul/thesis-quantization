@@ -494,6 +494,7 @@ class AudioFeaturesSequenceLoader(_SequenceLoader):
         image_downsampling_factor: int | float = 1,
         cameras: list[int] = TRAIN_CAMS,
         cache: bool = True,
+        cleaned: bool = True,
     ) -> None:
         """
         Args:
@@ -510,7 +511,7 @@ class AudioFeaturesSequenceLoader(_SequenceLoader):
             "sequences",
             self.sequence,
             "audio",
-            "audio_features.pt",
+            "audio_features.pt" if not cleaned else "audio_features_cleaned.pt",
         )
         self.cache = cache
         if cache:

@@ -103,6 +103,39 @@ def clean_audio_files(
         )
 
 
+def resample_audio_files(
+    data_directory: str = DATA_DIR_NERSEMBLE,
+    sequence_names: list[str] | str = [f"sequence_{i:04d}" for i in range(3, 102)],
+    target_sampling_rate: int = 16_000,
+) -> None:
+    """
+    Resample the audio files to a target sampling rate.
+
+    Args:
+        data_directory (str): The directory containing the data.
+        sequence_names (list[str] | str): The names of the sequences to clean. Defaults
+            to all sequences from 3 to 101.
+        target_sampling_rate (int): The target sampling rate to resample the audio to.
+            Defaults to 16000 to work with the wav2vec2 model.
+    """
+    if isinstance(sequence_names, str):
+        sequence_names = [sequence_names]
+
+    for sequence_name in tqdm(sequence_names, desc="Resampling audio files"):
+        audio, sr = sf.read(
+            f"{data_directory}/sequences/{sequence_name}/audio/audio_recording.ogg"
+        )
+        resampled_audio = librosa.resample(
+            audio, orig_sr=sr, target_sr=target_sampling_rate
+        )
+        sf.write(
+            f"{data_directory}/sequences/{sequence_name}/"
+            "audio/audio_recording_resampled.ogg",
+            resampled_audio,
+            samplerate=target_sampling_rate,
+        )
+
+
 if __name__ == "__main__":
 
-    clean_audio_files()
+    resample_audio_files()

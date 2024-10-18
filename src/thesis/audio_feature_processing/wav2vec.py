@@ -154,6 +154,7 @@ def save_audio_features(
     data_directory: str = DATA_DIR_NERSEMBLE,
     sequence_names: list[str] | str = [f"sequence_{i:04d}" for i in range(3, 102)],
     type: Literal["concatenation", "interpolation"] = "interpolation",
+    cleaned: bool = True,
     device: torch.device | str = "cuda",
 ) -> None:
     """
@@ -172,9 +173,17 @@ def save_audio_features(
     # Process the audio features
     for sequence_name in tqdm(sequence_names):
         audio_path = (
-            f"{data_directory}/sequences/{sequence_name}/audio/"
-            "audio_recording_cleaned.ogg"
+            (
+                f"{data_directory}/sequences/{sequence_name}/audio/"
+                "audio_recording_cleaned.ogg"
+            )
+            if cleaned
+            else (
+                f"{data_directory}/sequences/{sequence_name}/audio/"
+                "audio_recording_resampled.ogg"
+            )
         )
+
         audio, sampling_rate = sf.read(audio_path)
         frame_dir = f"{data_directory}/sequences/{sequence_name}/timesteps"
         n_frames = len(os.listdir(frame_dir))
@@ -199,7 +208,11 @@ def save_audio_features(
 
         # Save the hidden states
         audio_directory = os.path.dirname(audio_path)
-        output_path = os.path.join(audio_directory, "audio_features.pt")
+        output_path = (
+            os.path.join(audio_directory, "audio_features_cleaned.pt")
+            if cleaned
+            else os.path.join(audio_directory, "audio_features.pt")
+        )
         checkpoint = {"audio_features": hidden_states.to("cpu")}
         torch.save(checkpoint, output_path)
 
@@ -207,4 +220,4 @@ def save_audio_features(
 #  ======================= Main =======================
 
 if __name__ == "__main__":
-    save_audio_features()
+    save_audio_features(cleaned=False)

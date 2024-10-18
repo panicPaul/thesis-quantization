@@ -67,4 +67,5 @@ dependencies = [
     "moviepy",
     "pydub",
     'open3d',
+    'torch_geometric',
     ]

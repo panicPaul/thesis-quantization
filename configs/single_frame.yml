@@ -1,0 +1,44 @@
+# Training for a single frame
+
+
+# Gaussian Splatting
+gaussian_splatting_settings:
+  # general
+  feature_dim: 32
+  sh_degree: 3
+  initialization_mode: random
+  densification_mode: random
+  use_view_dependent_color_mlp: true
+  rasterization_mode: 'default'
+  # training
+  camera_batch_size: 1
+  sh_increase_interval: 1_000
+
+random_initialization_settings:
+  num_splats: 10_000
+  scene_scale: 0.2
+  initial_opacity: 0.1
+
+
+
+
+# Rendering Settings
+3dgs_rasterization_settings:
+  rasterize_mode: 'antialiased'
+  radius_clip: 0.0
+  eps2d: 0.3 # 3 pixels
+
+2dgs_rasterization_settings:
+  radius_clip: 0.0
+  eps2d: 0.3 # 3 pixels
+
+# Optimization Settings
+learning_rates:
+  # 3D Splatting
+  means_lr: 1.6e-4
+  scales_lr: 5e-3
+  quats_lr: 1e-3
+  opacities_lr: 5e-2
+  # Color MLP
+  color_mlp_lr: 1e-3
+  color_mlp_weight_decay: 1e-6

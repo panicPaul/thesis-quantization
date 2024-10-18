@@ -1,5 +1,6 @@
 from thesis.data_management.data_classes import (
     FlameParams,
+    GaussianSplats,
     QuantizationData,
     SE3Transform,
     SingleFrameData,

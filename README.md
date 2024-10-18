@@ -1,5 +1,12 @@
 # Thesis Project
 
+Flame-driven DF
+flame[t] -> encoder -> quantizer -> decoder -> flame[t] (-> flame df)
+
+Audio-driven DF
+Audio[t] -> encoder -> quantizer -> decoder -> flame[t] (-> flame df)
+
+
 # To Do's:
 
 - [ ] update repo

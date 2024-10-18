@@ -38,6 +38,7 @@ class SequenceManager:
         data_dir: str = DATA_DIR_NERSEMBLE,
         image_downsampling_factor: int | float = 1,
         cameras: list[int] = TRAIN_CAMS,
+        cleaned_audio: bool = True,
     ) -> None:
         """
         Args:
@@ -93,7 +94,11 @@ class SequenceManager:
             sequence, data_dir, image_downsampling_factor, cameras
         )
         self.audio_features = AudioFeaturesSequenceLoader(
-            sequence, data_dir, image_downsampling_factor, cameras
+            sequence,
+            data_dir,
+            image_downsampling_factor,
+            cameras,
+            cleaned=cleaned_audio,
         )
 
     def __len__(self) -> int:
@@ -140,7 +145,7 @@ class SequenceManager:
             camera_id (int | slice): Camera ID.
 
         Returns:
-            (Camera): Camera object
+            intrinsics, world_2_cam, serials
         """
         # Calculate intrinsics
         intrinsics = Intrinsics(self.camera_params["intrinsics"])
@@ -150,12 +155,12 @@ class SequenceManager:
         intrinsics = np.array(intrinsics).astype(np.float32)
         intrinsics = torch.tensor(intrinsics)
 
-        # Calculate extrinsics
+        # Calculate World2Cam
         if isinstance(camera_id, slice):
             serials = self.serials[camera_id]
         else:
             serials = [self.serials[camera_id]]
-        extrinsics = []
+        world_2_cam = []
         for s in serials:
             e = self.camera_params["world_2_cam"][s]
             e = Pose(
@@ -164,9 +169,9 @@ class SequenceManager:
                 pose_type=PoseType.WORLD_2_CAM,
             )
             e = np.array(e).astype(np.float32)
-            extrinsics.append(e)
-        extrinsics = np.stack(extrinsics, axis=0)
-        extrinsics = torch.tensor(extrinsics)
+            world_2_cam.append(e)
+        world_2_cam = np.stack(world_2_cam, axis=0)
+        world_2_cam = torch.tensor(world_2_cam)
 
         # Get the serials
         if isinstance(camera_id, int):
@@ -174,7 +179,7 @@ class SequenceManager:
         else:
             serials = self.serials[camera_id]
 
-        return intrinsics, extrinsics, serials
+        return intrinsics, world_2_cam, serials
 
     def load_point_cloud(
         self, time_step: int
@@ -298,7 +303,7 @@ class SequenceManager:
         intrinsics, e, _ = self.cameras
         image = self.images[idx, cameras].squeeze(0)  # remove time dimension
         segmentation_mask = self.segmentation_masks[idx, cameras].squeeze(0)
-        extrinsics = e[cameras, :]
+        world_2_cam = e[cameras, :]
         if len(cameras) == 1:
             image = image.unsqueeze(0)
             segmentation_mask = segmentation_mask.unsqueeze(0)
@@ -307,7 +312,7 @@ class SequenceManager:
             image=image,
             mask=segmentation_mask,
             intrinsics=intrinsics,
-            extrinsics=extrinsics,
+            world_2_cam=world_2_cam,
             color_correction=self.color_correction,
             se3_transform=self.se3_transforms[idx],
             sequence_id=torch.tensor(self.id),
