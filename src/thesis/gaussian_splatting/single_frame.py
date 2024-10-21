@@ -41,23 +41,17 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         self.rasterization_settings = rasterization_settings
         self.automatic_optimization = False
         if isinstance(gaussian_splatting_settings, DictConfig):
-            gaussian_splatting_settings = GaussianSplattingSettings(
-                **gaussian_splatting_settings
-            )
+            gaussian_splatting_settings = GaussianSplattingSettings(**gaussian_splatting_settings)
         self.max_sh_degree = gaussian_splatting_settings.sh_degree
 
         # Initialize splats
         match gaussian_splatting_settings.initialization_mode:
             case "random":
-                self.splats = nn.ParameterDict(
-                    random_initialization(**initialization_settings)
-                )
+                self.splats = nn.ParameterDict(random_initialization(**initialization_settings))
 
             case _:
-                raise ValueError(
-                    "Unknown initialization mode: "
-                    f"{gaussian_splatting_settings.initialization_mode}"
-                )
+                raise ValueError("Unknown initialization mode: "
+                                 f"{gaussian_splatting_settings.initialization_mode}")
 
         # Initialize the densification strategy
         match gaussian_splatting_settings.densification_mode:
@@ -68,10 +62,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 self.strategy = MCMCStrategy(**densification_settings)
 
             case _:
-                raise ValueError(
-                    "Unknown densification mode: "
-                    f"{gaussian_splatting_settings.densification_mode}"
-                )
+                raise ValueError("Unknown densification mode: "
+                                 f"{gaussian_splatting_settings.densification_mode}")
 
         # View-dependent color module
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
@@ -89,10 +81,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 self.rasterize = rasterization_2dgs
 
             case _:
-                raise ValueError(
-                    "Unknown rasterization mode: "
-                    f"{gaussian_splatting_settings.rasterization_mode}"
-                )
+                raise ValueError("Unknown rasterization mode: "
+                                 f"{gaussian_splatting_settings.rasterization_mode}")
 
     def configure_optimizers(self) -> tuple[set[Adam], dict[Adam]]:
         """
@@ -105,17 +95,14 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         scaling = math.sqrt(batch_size)
         splat_optimizers = {
             Adam(
-                [
-                    {
-                        "params": self.splats[name],
-                        "lr": self.learning_rates[f"{name}_lr"] * math.sqrt(batch_size),
-                        "name": name,
-                    }
-                ],
+                [{
+                    "params": self.splats[name],
+                    "lr": self.learning_rates[f"{name}_lr"] * math.sqrt(batch_size),
+                    "name": name,
+                }],
                 eps=1e-15 / math.sqrt(batch_size),
-                betas=(1 - batch_size * (1 - 0.9), 1 - batch_size * (1 - 0.999)),
-            )
-            for name in ["means", "scales", "quats", "opacities"]
+                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
+            ) for name in ["means", "scales", "quats", "opacities"]
         }
         other_optimizers = {}
         if hasattr(self, "view_dependent_color_mlp"):
@@ -136,9 +123,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             self.max_sh_degree,
         )
 
-    def forward(
-        self, batch: SingleFrameData, cur_sh_degree: int | None
-    ) -> Float[torch.Tensor, "cam H W 3"]:
+    def forward(self, batch: SingleFrameData,
+                cur_sh_degree: int | None) -> Float[torch.Tensor, "cam H W 3"]:
         """Forward pass."""
         # Set up
         if cur_sh_degree is None:
@@ -149,9 +135,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         features = self.splats["features"]
         means, quats = apply_se3(batch.se3_transform, means, quats)
         if hasattr(self, "view_dependent_color_mlp"):
-            colors = self.view_dependent_color_mlp.forward(
-                features, means, batch.world_2_cam, cur_sh_degree
-            )
+            colors = self.view_dependent_color_mlp.forward(features, means, batch.world_2_cam,
+                                                           cur_sh_degree)
         else:
             colors = self.splats["colors"]
         # Rasterization

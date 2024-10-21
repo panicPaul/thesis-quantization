@@ -57,22 +57,13 @@ class SequenceManager:
         self.sequence = sequence
         self.image_downsampling_factor = image_downsampling_factor
         self.data_dir = data_dir
-        camera_config = json.load(
-            open(os.path.join(data_dir, "calibration/config.json"))
-        )
-        self.image_width = int(
-            camera_config["image_size"][0] // (2 * image_downsampling_factor)
-        )
-        self.image_height = int(
-            camera_config["image_size"][1] // (2 * image_downsampling_factor)
-        )
+        camera_config = json.load(open(os.path.join(data_dir, "calibration/config.json")))
+        self.image_width = int(camera_config["image_size"][0] // (2*image_downsampling_factor))
+        self.image_height = int(camera_config["image_size"][1] // (2*image_downsampling_factor))
         self.camera_params = json.load(
-            open(os.path.join(data_dir, "calibration/camera_params.json"))
-        )
+            open(os.path.join(data_dir, "calibration/camera_params.json")))
 
-        self.serials = [
-            list(self.camera_params["world_2_cam"].keys())[c] for c in cameras
-        ]
+        self.serials = [list(self.camera_params["world_2_cam"].keys())[c] for c in cameras]
         self.camera_ids = np.array(cameras)
 
         # get the time steps
@@ -81,18 +72,14 @@ class SequenceManager:
         self.frames = sorted([int(f.split("_")[1]) for f in frames])
 
         # get the primitive loaders
-        self.images = ImageSequenceLoader(
-            sequence, data_dir, image_downsampling_factor, cameras
-        )
-        self.segmentation_masks = SegmentationMaskSequenceLoader(
-            sequence, data_dir, image_downsampling_factor, cameras
-        )
-        self.flame_params = FlameParamsSequenceLoader(
-            sequence, data_dir, image_downsampling_factor, cameras
-        )
-        self.se3_transforms = SE3TransformSequenceLoader(
-            sequence, data_dir, image_downsampling_factor, cameras
-        )
+        self.images = ImageSequenceLoader(sequence, data_dir, image_downsampling_factor, cameras)
+        self.segmentation_masks = SegmentationMaskSequenceLoader(sequence, data_dir,
+                                                                 image_downsampling_factor,
+                                                                 cameras)
+        self.flame_params = FlameParamsSequenceLoader(sequence, data_dir,
+                                                      image_downsampling_factor, cameras)
+        self.se3_transforms = SE3TransformSequenceLoader(sequence, data_dir,
+                                                         image_downsampling_factor, cameras)
         self.audio_features = AudioFeaturesSequenceLoader(
             sequence,
             data_dir,
@@ -106,17 +93,14 @@ class SequenceManager:
 
     @property
     def cameras(
-        self,
-    ) -> tuple[Float[torch.Tensor, "3 3"], Float[torch.Tensor, "cam 4 4"], list[str]]:
+        self,) -> tuple[Float[torch.Tensor, "3 3"], Float[torch.Tensor, "cam 4 4"], list[str]]:
         # auto-caching of the cameras
         if not hasattr(self, "_cameras"):
             self._cameras = self.load_camera(slice(0, None, None))
         return self._cameras
 
     @property
-    def color_correction(
-        self,
-    ) -> Float[torch.Tensor, "cam 3 3"] | Float[torch.Tensor, "3 3"]:
+    def color_correction(self,) -> Float[torch.Tensor, "cam 3 3"] | Float[torch.Tensor, "3 3"]:
         # auto-caching of the color correction
         if not hasattr(self, "_color_correction"):
             self._color_correction = self.load_color_correction(slice(0, None, None))
@@ -149,9 +133,7 @@ class SequenceManager:
         """
         # Calculate intrinsics
         intrinsics = Intrinsics(self.camera_params["intrinsics"])
-        intrinsics = intrinsics.rescale(
-            0.5 * (2 ** -(self.image_downsampling_factor - 1))
-        )
+        intrinsics = intrinsics.rescale(0.5 * (2**-(self.image_downsampling_factor - 1)))
         intrinsics = np.array(intrinsics).astype(np.float32)
         intrinsics = torch.tensor(intrinsics)
 
@@ -182,8 +164,7 @@ class SequenceManager:
         return intrinsics, world_2_cam, serials
 
     def load_point_cloud(
-        self, time_step: int
-    ) -> tuple[Float[torch.Tensor, "N 3"], Float[torch.Tensor, "N 3"]]:
+            self, time_step: int) -> tuple[Float[torch.Tensor, "N 3"], Float[torch.Tensor, "N 3"]]:
         """
         Get the point cloud for a given sequence and time step.
 
@@ -238,8 +219,8 @@ class SequenceManager:
         return sf.read(filename)
 
     def load_color_correction(
-        self, camera_id: int | slice
-    ) -> Float[torch.Tensor, "cam 3 3"] | Float[torch.Tensor, "3 3"]:
+            self,
+            camera_id: int | slice) -> Float[torch.Tensor, "cam 3 3"] | Float[torch.Tensor, "3 3"]:
         """
         Get the color correction matrix for a given camera.
 
@@ -267,11 +248,7 @@ class SequenceManager:
                 return load_single_color_correction(c)
             case slice() as s:
                 return torch.stack(
-                    [
-                        load_single_color_correction(c)
-                        for c in range(*s.indices(self.n_cameras))
-                    ]
-                )
+                    [load_single_color_correction(c) for c in range(*s.indices(self.n_cameras))])
 
     def sample_n_cams(self, n_cams: int) -> list[int]:
         """
@@ -389,7 +366,7 @@ class MultiSequenceManager:
         left, right = 0, len(self.start_indices) - 1
 
         while left <= right:
-            mid = (left + right) // 2
+            mid = (left+right) // 2
             if self.start_indices[mid] <= idx < self.end_indices[mid]:
                 return mid, idx - self.start_indices[mid]
             elif idx < self.start_indices[mid]:

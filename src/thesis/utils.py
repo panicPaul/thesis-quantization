@@ -5,8 +5,7 @@ from jaxtyping import Float
 
 
 def rotation_matrix_to_quaternion(
-    rotation: Float[torch.Tensor, "... 3 3"]
-) -> Float[torch.Tensor, "... 4"]:
+        rotation: Float[torch.Tensor, "... 3 3"]) -> Float[torch.Tensor, "... 4"]:
     """Convert a rotation matrix to a quaternion."""
     if rotation.size(-1) != 3 or rotation.size(-2) != 3:
         raise ValueError("Invalid rotation matrix shape. Expected (..., 3, 3)")
@@ -23,35 +22,35 @@ def rotation_matrix_to_quaternion(
         r = torch.sqrt(1 + trace)
         s = 0.5 / r
         w = 0.5 * r
-        x = (m21 - m12) * s
-        y = (m02 - m20) * s
-        z = (m10 - m01) * s
+        x = (m21-m12) * s
+        y = (m02-m20) * s
+        z = (m10-m01) * s
         return torch.stack([w, x, y, z], dim=-1)
 
     def case_2():
         r = torch.sqrt(1 + m00 - m11 - m22)
         s = 2.0 * r
-        w = (m21 - m12) / s
+        w = (m21-m12) / s
         x = 0.25 * s
-        y = (m01 + m10) / s
-        z = (m02 + m20) / s
+        y = (m01+m10) / s
+        z = (m02+m20) / s
         return torch.stack([w, x, y, z], dim=-1)
 
     def case_3():
         r = torch.sqrt(1 - m00 + m11 - m22)
         s = 2.0 * r
-        w = (m02 - m20) / s
-        x = (m01 + m10) / s
+        w = (m02-m20) / s
+        x = (m01+m10) / s
         y = 0.25 * s
-        z = (m12 + m21) / s
+        z = (m12+m21) / s
         return torch.stack([w, x, y, z], dim=-1)
 
     def case_4():
         r = torch.sqrt(1 - m00 - m11 + m22)
         s = 2.0 * r
-        w = (m10 - m01) / s
-        x = (m02 + m20) / s
-        y = (m12 + m21) / s
+        w = (m10-m01) / s
+        x = (m02+m20) / s
+        y = (m12+m21) / s
         z = 0.25 * s
         return torch.stack([w, x, y, z], dim=-1)
 
@@ -85,10 +84,10 @@ def quaternion_multiplication(
     w1, x1, y1, z1 = torch.unbind(quat_1, -1)
     w2, x2, y2, z2 = torch.unbind(quat_2, -1)
 
-    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
-    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
-    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    w = w1*w2 - x1*x2 - y1*y2 - z1*z2
+    x = w1*x2 + x1*w2 + y1*z2 - z1*y2
+    y = w1*y2 - x1*z2 + y1*w2 + z1*x2
+    z = w1*z2 + x1*y2 - y1*x2 + z1*w2
 
     return torch.stack([w, x, y, z], dim=-1)
 
@@ -110,10 +109,8 @@ def apply_se3(
     translation: Float[torch.Tensor, "... 3"],
     points: Float[torch.Tensor, "... 3"],
     orientations: Float[torch.Tensor, "... 4]"] | None = None,
-) -> (
-    Float[torch.Tensor, "... 3"]
-    | tuple[Float[torch.Tensor, "... 3"], Float[torch.Tensor, "... 4"]]
-):
+) -> (Float[torch.Tensor, "... 3"]
+      | tuple[Float[torch.Tensor, "... 3"], Float[torch.Tensor, "... 4"]]):
     """Apply the SE3 transform to the points.
 
     Args:

@@ -25,6 +25,7 @@ from thesis.data_management.data_classes import (
 
 
 class _SequenceLoader:
+
     def init(
         self,
         sequence: str | int,
@@ -42,22 +43,13 @@ class _SequenceLoader:
         self.sequence = sequence
         self.image_downsampling_factor = image_downsampling_factor
         self.data_dir = data_dir
-        camera_config = json.load(
-            open(os.path.join(data_dir, "calibration/config.json"))
-        )
-        self.image_width = int(
-            camera_config["image_size"][0] // (2 * image_downsampling_factor)
-        )
-        self.image_height = int(
-            camera_config["image_size"][1] // (2 * image_downsampling_factor)
-        )
+        camera_config = json.load(open(os.path.join(data_dir, "calibration/config.json")))
+        self.image_width = int(camera_config["image_size"][0] // (2*image_downsampling_factor))
+        self.image_height = int(camera_config["image_size"][1] // (2*image_downsampling_factor))
         self.camera_params = json.load(
-            open(os.path.join(data_dir, "calibration/camera_params.json"))
-        )
+            open(os.path.join(data_dir, "calibration/camera_params.json")))
 
-        self.serials = [
-            list(self.camera_params["world_2_cam"].keys())[c] for c in cameras
-        ]
+        self.serials = [list(self.camera_params["world_2_cam"].keys())[c] for c in cameras]
         self.camera_ids = np.array(cameras)
 
         # get the time steps
@@ -88,22 +80,18 @@ class ImageSequenceLoader(_SequenceLoader):
 
     def __getitem__(
         self,
-        idx: (
-            int
-            | slice
-            | tuple[int, int]
-            | tuple[slice, int]
-            | tuple[int, slice]
-            | tuple[slice, slice]
-            | tuple[int, tuple]
-            | tuple[slice, tuple]
-        ),
-    ) -> (
-        Float[torch.Tensor, "time cam H W 3"]
-        | Float[torch.Tensor, "time H W 3"]
-        | Float[torch.Tensor, "cam H W 3"]
-        | Float[torch.Tensor, "H W 3"]
-    ):
+        idx: (int
+              | slice
+              | tuple[int, int]
+              | tuple[slice, int]
+              | tuple[int, slice]
+              | tuple[slice, slice]
+              | tuple[int, tuple]
+              | tuple[slice, tuple]),
+    ) -> (Float[torch.Tensor, "time cam H W 3"]
+          | Float[torch.Tensor, "time H W 3"]
+          | Float[torch.Tensor, "cam H W 3"]
+          | Float[torch.Tensor, "H W 3"]):
         """
         Get the image for a given sequence, time step, and camera.
 
@@ -127,32 +115,25 @@ class ImageSequenceLoader(_SequenceLoader):
             )
             image = Image.open(filename)
             if self.image_downsampling_factor > 1:
-                image = image.resize(
-                    (
-                        int(image.size[0] // self.image_downsampling_factor),
-                        int(image.size[1] // self.image_downsampling_factor),
-                    )
-                )
+                image = image.resize((
+                    int(image.size[0] // self.image_downsampling_factor),
+                    int(image.size[1] // self.image_downsampling_factor),
+                ))
             return torch.tensor(np.array(image).astype(np.float32)) / 255.0
 
         match idx:
             case int(t):
                 # Single time step, all cameras
-                return torch.stack(
-                    [load_single_image(t, c) for c in range(len(self.serials))]
-                )
+                return torch.stack([load_single_image(t, c) for c in range(len(self.serials))])
 
             case slice() as s:
                 # Multiple time steps, all cameras
                 time_steps = range(*s.indices(len(self)))
-                return torch.stack(
-                    [
-                        torch.stack(
-                            [load_single_image(t, c) for c in range(len(self.serials))]
-                        )
-                        for t in time_steps
-                    ]
-                )
+                return torch.stack([
+                    torch.stack([load_single_image(t, c)
+                                 for c in range(len(self.serials))])
+                    for t in time_steps
+                ])
 
             case (int(t), int(c)):
                 # Single time step, single camera
@@ -172,12 +153,9 @@ class ImageSequenceLoader(_SequenceLoader):
                 # Multiple time steps, multiple cameras
                 time_steps = range(*s.indices(len(self)))
                 camera_ids = range(*c.indices(len(self.serials)))
-                return torch.stack(
-                    [
-                        torch.stack([load_single_image(t, c) for c in camera_ids])
-                        for t in time_steps
-                    ]
-                )
+                return torch.stack([
+                    torch.stack([load_single_image(t, c) for c in camera_ids]) for t in time_steps
+                ])
 
             case (int(t), tuple() as c):
                 # Single time step, multiple cameras (selected)
@@ -188,12 +166,9 @@ class ImageSequenceLoader(_SequenceLoader):
                 # Multiple time steps, multiple cameras (selected)
                 time_steps = range(*s.indices(len(self)))
                 camera_ids = c
-                return torch.stack(
-                    [
-                        torch.stack([load_single_image(t, c) for c in camera_ids])
-                        for t in time_steps
-                    ]
-                )
+                return torch.stack([
+                    torch.stack([load_single_image(t, c) for c in camera_ids]) for t in time_steps
+                ])
 
             case _:
                 raise ValueError("Invalid index.")
@@ -233,22 +208,18 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
 
     def __getitem__(
         self,
-        idx: (
-            int
-            | slice
-            | tuple[int, int]
-            | tuple[slice, int]
-            | tuple[int, slice]
-            | tuple[slice, slice]
-            | tuple[int, tuple]
-            | tuple[slice, tuple]
-        ),
-    ) -> (
-        Float[torch.Tensor, "time cam H W"]
-        | Float[torch.Tensor, "time H W"]
-        | Float[torch.Tensor, "cam H W"]
-        | Float[torch.Tensor, "H W"]
-    ):
+        idx: (int
+              | slice
+              | tuple[int, int]
+              | tuple[slice, int]
+              | tuple[int, slice]
+              | tuple[slice, slice]
+              | tuple[int, tuple]
+              | tuple[slice, tuple]),
+    ) -> (Float[torch.Tensor, "time cam H W"]
+          | Float[torch.Tensor, "time H W"]
+          | Float[torch.Tensor, "cam H W"]
+          | Float[torch.Tensor, "H W"]):
         """
         Get the image for a given sequence, time step, and camera.
 
@@ -271,32 +242,25 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
                 f"cam_{self.serials[c]}.png",
             )
             image = Image.open(filename)
-            image = image.resize(
-                (
-                    int(image.size[0] // (self.image_downsampling_factor * 2)),
-                    int(image.size[1] // (self.image_downsampling_factor * 2)),
-                )
-            )
+            image = image.resize((
+                int(image.size[0] // (self.image_downsampling_factor * 2)),
+                int(image.size[1] // (self.image_downsampling_factor * 2)),
+            ))
             return torch.tensor(np.array(image).astype(np.float32)) / 255.0
 
         match idx:
             case int(t):
                 # Single time step, all cameras
-                return torch.stack(
-                    [load_single_image(t, c) for c in range(len(self.serials))]
-                )
+                return torch.stack([load_single_image(t, c) for c in range(len(self.serials))])
 
             case slice() as s:
                 # Multiple time steps, all cameras
                 time_steps = range(*s.indices(len(self)))
-                return torch.stack(
-                    [
-                        torch.stack(
-                            [load_single_image(t, c) for c in range(len(self.serials))]
-                        )
-                        for t in time_steps
-                    ]
-                )
+                return torch.stack([
+                    torch.stack([load_single_image(t, c)
+                                 for c in range(len(self.serials))])
+                    for t in time_steps
+                ])
 
             case (int(t), int(c)):
                 # Single time step, single camera
@@ -316,12 +280,9 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
                 # Multiple time steps, multiple cameras
                 time_steps = range(*s.indices(len(self)))
                 camera_ids = range(*c.indices(len(self.serials)))
-                return torch.stack(
-                    [
-                        torch.stack([load_single_image(t, c) for c in camera_ids])
-                        for t in time_steps
-                    ]
-                )
+                return torch.stack([
+                    torch.stack([load_single_image(t, c) for c in camera_ids]) for t in time_steps
+                ])
 
             case (int(t), tuple() as c):
                 # Single time step, multiple cameras (selected)
@@ -332,12 +293,9 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
                 # Multiple time steps, multiple cameras (selected)
                 time_steps = range(*s.indices(len(self)))
                 camera_ids = c
-                return torch.stack(
-                    [
-                        torch.stack([load_single_image(t, c) for c in camera_ids])
-                        for t in time_steps
-                    ]
-                )
+                return torch.stack([
+                    torch.stack([load_single_image(t, c) for c in camera_ids]) for t in time_steps
+                ])
 
             case _:
                 raise ValueError("Invalid index.")
@@ -356,6 +314,7 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
 
 
 class FlameParamsSequenceLoader(_SequenceLoader):
+
     def __init__(
         self,
         sequence: str | int,
@@ -405,9 +364,7 @@ class FlameParamsSequenceLoader(_SequenceLoader):
         else:
             with np.load(self.filename) as data:
                 shape = torch.tensor(data["shape"][0], dtype=torch.float32)
-                expression = torch.tensor(
-                    data["expression"][time_step], dtype=torch.float32
-                )
+                expression = torch.tensor(data["expression"][time_step], dtype=torch.float32)
                 neck = torch.tensor(data["neck"][time_step], dtype=torch.float32)
                 jaw = torch.tensor(data["jaw"][time_step], dtype=torch.float32)
                 eyes = torch.tensor(data["eyes"][time_step], dtype=torch.float32)
@@ -425,6 +382,7 @@ class FlameParamsSequenceLoader(_SequenceLoader):
 
 
 class SE3TransformSequenceLoader(_SequenceLoader):
+
     def __init__(
         self,
         sequence: str | int,
@@ -454,12 +412,8 @@ class SE3TransformSequenceLoader(_SequenceLoader):
         self.cache = cache
         if cache:
             with np.load(self.filename) as data:
-                self.rotation = torch.tensor(
-                    data["rotation_matrices"], dtype=torch.float32
-                )
-                self.translation = torch.tensor(
-                    data["translation"], dtype=torch.float32
-                )
+                self.rotation = torch.tensor(data["rotation_matrices"], dtype=torch.float32)
+                self.translation = torch.tensor(data["translation"], dtype=torch.float32)
 
     def __len__(self) -> int:
         return len(self.frames)
@@ -471,12 +425,8 @@ class SE3TransformSequenceLoader(_SequenceLoader):
             translation = self.translation[time_step]
         else:
             with np.load(self.filename) as data:
-                rotation = torch.tensor(
-                    data["rotation_matrices"][time_step], dtype=torch.float32
-                )
-                translation = torch.tensor(
-                    data["translation"][time_step], dtype=torch.float32
-                )
+                rotation = torch.tensor(data["rotation_matrices"][time_step], dtype=torch.float32)
+                translation = torch.tensor(data["translation"][time_step], dtype=torch.float32)
 
         return UnbatchedSE3Transform(rotation, translation)
 
@@ -487,6 +437,7 @@ class SE3TransformSequenceLoader(_SequenceLoader):
 
 
 class AudioFeaturesSequenceLoader(_SequenceLoader):
+
     def __init__(
         self,
         sequence: str | int,
@@ -515,19 +466,15 @@ class AudioFeaturesSequenceLoader(_SequenceLoader):
         )
         self.cache = cache
         if cache:
-            self.audio_features = torch.load(self.filename, weights_only=False)[
-                "audio_features"
-            ]
+            self.audio_features = torch.load(self.filename, weights_only=False)["audio_features"]
 
     def __len__(self) -> int:
         return len(self.frames)
 
     def __getitem__(
-        self, time_step: int | slice
+            self, time_step: int | slice
     ) -> Float[torch.Tensor, "time 1024"] | Float[torch.Tensor, "1024"]:
         if self.cache:
             return self.audio_features[time_step]
         else:
-            return torch.load(self.filename, weights_only=False)["audio_features"][
-                time_step
-            ]
+            return torch.load(self.filename, weights_only=False)["audio_features"][time_step]

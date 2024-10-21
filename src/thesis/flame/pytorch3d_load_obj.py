@@ -33,8 +33,6 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 # pyre-unsafe
-
-
 """This module implements utility functions for loading and saving meshes."""
 import contextlib
 import os
@@ -72,9 +70,7 @@ def _open_file(f, path_manager: PathManager, mode: str = "r") -> ContextManager[
         return nullcontext(f)
 
 
-def _make_tensor(
-    data, cols: int, dtype: torch.dtype, device: Device = "cpu"
-) -> torch.Tensor:
+def _make_tensor(data, cols: int, dtype: torch.dtype, device: Device = "cpu") -> torch.Tensor:
     """
     Return a 2D tensor with the specified cols and dtype filled with data,
     even when data is empty.
@@ -85,25 +81,21 @@ def _make_tensor(
     return torch.tensor(data, dtype=dtype, device=device)
 
 
-def _check_faces_indices(
-    faces_indices: torch.Tensor, max_index: int, pad_value: Optional[int] = None
-) -> torch.Tensor:
+def _check_faces_indices(faces_indices: torch.Tensor,
+                         max_index: int,
+                         pad_value: Optional[int] = None) -> torch.Tensor:
     if pad_value is None:
         mask = torch.ones(faces_indices.shape[:-1]).bool()  # Keep all faces
     else:
         mask = faces_indices.ne(pad_value).any(dim=-1)
-    if torch.any(faces_indices[mask] >= max_index) or torch.any(
-        faces_indices[mask] < 0
-    ):
+    if torch.any(faces_indices[mask] >= max_index) or torch.any(faces_indices[mask] < 0):
         warnings.warn("Faces have invalid indices")
     return faces_indices
 
 
 # Faces & Aux type returned from load_obj function.
 _Faces = namedtuple("Faces", "verts_idx normals_idx textures_idx materials_idx")
-_Aux = namedtuple(
-    "Properties", "normals verts_uvs material_colors texture_images texture_atlas"
-)
+_Aux = namedtuple("Properties", "normals verts_uvs material_colors texture_images texture_atlas")
 
 
 def _format_faces_indices(faces_indices, max_index: int, device, pad_value=None):
@@ -126,9 +118,7 @@ def _format_faces_indices(faces_indices, max_index: int, device, pad_value=None)
     Raises:
         ValueError if indices are not in a valid range.
     """
-    faces_indices = _make_tensor(
-        faces_indices, cols=3, dtype=torch.int64, device=device
-    )
+    faces_indices = _make_tensor(faces_indices, cols=3, dtype=torch.int64, device=device)
 
     if pad_value is not None:
         mask = faces_indices.eq(pad_value).all(dim=-1)
@@ -334,11 +324,8 @@ def _parse_face(
                 # Normal index present e.g. 4/1/1 or 4//1.
                 face_normals.append(int(vert_props[2]))
             if len(vert_props) > 3:
-                raise ValueError(
-                    "Face vertices can only have 3 properties. \
-                                Face vert %s, Line: %s"
-                    % (str(vert_props), str(line))
-                )
+                raise ValueError("Face vertices can only have 3 properties. \
+                                Face vert %s, Line: %s" % (str(vert_props), str(line)))
 
     # Triplets must be consistent for all vertices in a face e.g.
     # legal statement: f 4/1/1 3/2/1 2/1/1.
@@ -349,20 +336,14 @@ def _parse_face(
     # F is the number of faces.
     if len(face_normals) > 0:
         if not (len(face_verts) == len(face_normals)):
-            raise ValueError(
-                "Face %s is an illegal statement. \
-                        Vertex properties are inconsistent. Line: %s"
-                % (str(face), str(line))
-            )
+            raise ValueError("Face %s is an illegal statement. \
+                        Vertex properties are inconsistent. Line: %s" % (str(face), str(line)))
     else:
         face_normals = [-1] * len(face_verts)  # Fill with -1
     if len(face_textures) > 0:
         if not (len(face_verts) == len(face_textures)):
-            raise ValueError(
-                "Face %s is an illegal statement. \
-                        Vertex properties are inconsistent. Line: %s"
-                % (str(face), str(line))
-            )
+            raise ValueError("Face %s is an illegal statement. \
+                        Vertex properties are inconsistent. Line: %s" % (str(face), str(line)))
     else:
         face_textures = [-1] * len(face_verts)  # Fill with -1
 
@@ -370,12 +351,8 @@ def _parse_face(
     # See comments of the load_obj function for more details.
     for i in range(len(face_verts) - 2):
         faces_verts_idx.append((face_verts[0], face_verts[i + 1], face_verts[i + 2]))
-        faces_normals_idx.append(
-            (face_normals[0], face_normals[i + 1], face_normals[i + 2])
-        )
-        faces_textures_idx.append(
-            (face_textures[0], face_textures[i + 1], face_textures[i + 2])
-        )
+        faces_normals_idx.append((face_normals[0], face_normals[i + 1], face_normals[i + 2]))
+        faces_textures_idx.append((face_textures[0], face_textures[i + 1], face_textures[i + 2]))
         faces_materials_idx.append(material_idx)
 
 
@@ -407,7 +384,7 @@ def _parse_obj(f, data_dir: str):
             # NOTE: only allow one .mtl file per .obj.
             # Definitions for multiple materials can be included
             # in this one .mtl file.
-            mtl_path = line[len(tokens[0]) :].strip()  # Take the remainder of the line
+            mtl_path = line[len(tokens[0]):].strip()  # Take the remainder of the line
             mtl_path = os.path.join(data_dir, mtl_path)
         elif len(tokens) and tokens[0] == "usemtl":
             material_name = tokens[1]
@@ -427,9 +404,8 @@ def _parse_obj(f, data_dir: str):
         elif line.startswith("vt "):  # Line is a texture.
             tx = [float(x) for x in tokens[1:3]]
             if len(tx) != 2:
-                raise ValueError(
-                    "Texture %s does not have 2 values. Line: %s" % (str(tx), str(line))
-                )
+                raise ValueError("Texture %s does not have 2 values. Line: %s" %
+                                 (str(tx), str(line)))
             verts_uvs.append(tx)
         elif line.startswith("vn "):  # Line is a normal.
             norm = [float(x) for x in tokens[1:4]]
@@ -555,23 +531,17 @@ def _load_obj(
         device=device,
     )  # (T, 2)
 
-    faces_verts_idx = _format_faces_indices(
-        faces_verts_idx, verts.shape[0], device=device
-    )
+    faces_verts_idx = _format_faces_indices(faces_verts_idx, verts.shape[0], device=device)
 
     # Repeat for normals and textures if present.
     if len(faces_normals_idx):
         faces_normals_idx = _format_faces_indices(
-            faces_normals_idx, normals.shape[0], device=device, pad_value=-1
-        )
+            faces_normals_idx, normals.shape[0], device=device, pad_value=-1)
     if len(faces_textures_idx):
         faces_textures_idx = _format_faces_indices(
-            faces_textures_idx, verts_uvs.shape[0], device=device, pad_value=-1
-        )
+            faces_textures_idx, verts_uvs.shape[0], device=device, pad_value=-1)
     if len(faces_materials_idx):
-        faces_materials_idx = torch.tensor(
-            faces_materials_idx, dtype=torch.int64, device=device
-        )
+        faces_materials_idx = torch.tensor(faces_materials_idx, dtype=torch.int64, device=device)
 
     texture_atlas = None
     material_colors, texture_images = _load_materials(

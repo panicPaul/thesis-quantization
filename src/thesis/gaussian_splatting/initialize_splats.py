@@ -53,8 +53,6 @@ def random_initialization(
     if feature_dim is not None:
         splats["features"] = nn.Parameter(torch.randn((num_splats, feature_dim)))
     if initialize_colors:
-        splats["colors"] = nn.Parameter(
-            torch.randn((num_splats, (colors_sh_degree + 1) ** 2), 3)
-        )
+        splats["colors"] = nn.Parameter(torch.randn((num_splats, (colors_sh_degree + 1)**2), 3))
 
     return splats

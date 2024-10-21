@@ -199,3 +199,42 @@ class QuantizationDataset(Dataset):
         se3_transforms = dc.SE3Transform(*[st.to(device) for st in se3_transforms])
         audio_features = audio_features.to(device)
         return flame_params, se3_transforms, audio_features
+
+
+class AudioQuantizationDataset(Dataset):
+    def __init__(self, mode="train", window_size: int = 16) -> None:
+        """
+        Dataset to train on my laptop.
+
+        Args:
+            mode (str, optional): "train" or "test". Defaults to "train".
+            window_size (int): Defaults to 16.
+        """
+        data = torch.load("audio_features.pt", weights_only=False)
+        if mode == "train":
+            self.data = data[:80]
+        else:
+            self.data = data[80:]
+        cnt = 0
+        self.start_indices = []
+        self.end_indices = []
+        for i in range(len(self.data)):
+            self.start_indices.append(cnt)
+            cnt += self.data[i].shape[0] - window_size + 1
+            self.end_indices.append(cnt)
+
+    def __len__(self) -> int:
+        return sum(self.end_indices) - sum(self.start_indices)
+
+    def __getitem__(self, idx):
+        # binary search
+        i = 0
+        j = len(self.start_indices)
+        while i < j:
+            mid = (i + j) // 2
+            if idx >= self.end_indices[mid]:
+                i = mid + 1
+            else:
+                j = mid
+        idx -= self.start_indices[i]
+        return self.data[i][idx : idx + 16]

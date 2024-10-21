@@ -30,8 +30,6 @@ class GaussianSplattingSettings:
 def load_config(path: str) -> DictConfig:
     """Load the configuration file."""
     config = OmegaConf.load(path)
-    gaussian_splatting_settings = GaussianSplattingSettings(
-        **config.gaussian_splatting_settings
-    )
+    gaussian_splatting_settings = GaussianSplattingSettings(**config.gaussian_splatting_settings)
     config.gaussian_splatting_settings = gaussian_splatting_settings
     return config
