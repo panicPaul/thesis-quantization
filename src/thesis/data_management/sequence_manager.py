@@ -9,6 +9,7 @@ import soundfile as sf
 import torch
 from dreifus.camera import CameraCoordinateConvention, PoseType
 from dreifus.matrix import Intrinsics, Pose
+from einops import repeat
 from jaxtyping import Float
 
 from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS
@@ -284,6 +285,7 @@ class SequenceManager:
         if len(cameras) == 1:
             image = image.unsqueeze(0)
             segmentation_mask = segmentation_mask.unsqueeze(0)
+        intrinsics = repeat(intrinsics, "(cam m) n -> cam m n", cam=len(cameras))
 
         return SingleFrameData(
             image=image,

@@ -61,9 +61,9 @@ class SingleSequenceDataset(Dataset):
         idx = idx + self.start_idx
         return self.sequence_manager.get_single_frame(idx, self.n_cameras_per_frame)
 
-    def prepare_data(
-        self, batch: dc.SingleFrameData, device: torch.device | str = "cuda"
-    ) -> dc.SingleFrameData:
+    def prepare_data(self,
+                     batch: dc.SingleFrameData,
+                     device: torch.device | str = "cuda") -> dc.SingleFrameData:
         se3_transform = dc.UnbatchedSE3Transform(
             rotation=batch.se3_transform.rotation.to(device),
             translation=batch.se3_transform.translation.to(device),
@@ -120,13 +120,11 @@ class MultiSequenceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dc.SingleFrameData:
         sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
-        return self.msm[sequence_idx].get_single_frame(
-            frame_idx, self.n_cameras_per_frame
-        )
+        return self.msm[sequence_idx].get_single_frame(frame_idx, self.n_cameras_per_frame)
 
-    def prepare_data(
-        self, batch: dc.SingleFrameData, device: torch.device | str = "cuda"
-    ) -> dc.SingleFrameData:
+    def prepare_data(self,
+                     batch: dc.SingleFrameData,
+                     device: torch.device | str = "cuda") -> dc.SingleFrameData:
         se3_transform = dc.UnbatchedSE3Transform(
             rotation=batch.se3_transform.rotation.to(device),
             translation=batch.se3_transform.translation.to(device),
@@ -175,24 +173,19 @@ class QuantizationDataset(Dataset):
 
     def __getitem__(self, idx: int):
         sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
-        flame_params = tuple(
-            self.msm[sequence_idx].flame_params[
-                frame_idx : frame_idx + self.window_size
-            ]
-        )
-        se3_transforms = tuple(
-            self.msm[sequence_idx].se3_transforms[
-                frame_idx : frame_idx + self.window_size
-            ]
-        )
-        audio_features = self.msm[sequence_idx].audio_features[
-            frame_idx : frame_idx + self.window_size
-        ]
+        flame_params = tuple(self.msm[sequence_idx].flame_params[frame_idx:frame_idx
+                                                                 + self.window_size])
+        se3_transforms = tuple(self.msm[sequence_idx].se3_transforms[frame_idx:frame_idx
+                                                                     + self.window_size])
+        audio_features = self.msm[sequence_idx].audio_features[frame_idx:frame_idx
+                                                               + self.window_size]
         return flame_params, se3_transforms, audio_features
 
     @classmethod
     def prepare_data(
-        cls, batch, device: torch.device | str = "cuda"
+        cls,
+        batch,
+        device: torch.device | str = "cuda"
     ) -> tuple[dc.FlameParams, dc.SE3Transform, Float[torch.Tensor, "batch time 1024"]]:
         flame_params, se3_transforms, audio_features = batch
         flame_params = dc.FlameParams(*[fp.to(device) for fp in flame_params])
@@ -202,6 +195,7 @@ class QuantizationDataset(Dataset):
 
 
 class AudioQuantizationDataset(Dataset):
+
     def __init__(self, mode="train", window_size: int = 16) -> None:
         """
         Dataset to train on my laptop.
@@ -231,10 +225,10 @@ class AudioQuantizationDataset(Dataset):
         i = 0
         j = len(self.start_indices)
         while i < j:
-            mid = (i + j) // 2
+            mid = (i+j) // 2
             if idx >= self.end_indices[mid]:
                 i = mid + 1
             else:
                 j = mid
         idx -= self.start_indices[i]
-        return self.data[i][idx : idx + 16]
+        return self.data[i][idx:idx + 16]

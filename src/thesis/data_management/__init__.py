@@ -12,6 +12,7 @@ from thesis.data_management.datasets import (
     QuantizationDataset,
     SingleSequenceDataset,
 )
+from thesis.data_management.point_cloud import load_point_cloud
 from thesis.data_management.sequence_manager import (
     MultiSequenceManager,
     SequenceManager,

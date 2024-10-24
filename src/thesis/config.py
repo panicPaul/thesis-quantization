@@ -20,7 +20,8 @@ class GaussianSplattingSettings:
 
     # rasterization_settings
     sh_degree: int = 3
-    rasterization_mode: str = "default"
+    rasterization_mode: str = "default"  # 2dgs vs 3dgs
+    antialiased: bool = True
     radius_clip: float = 0.0
     dist_loss: bool = False  # only for 2D gs
 

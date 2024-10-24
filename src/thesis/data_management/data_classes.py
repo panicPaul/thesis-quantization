@@ -115,7 +115,7 @@ class SingleFrameData(NamedTuple):
 
     image: Float[torch.Tensor, "cam H W 3"]
     mask: Float[torch.Tensor, "cam H W"]
-    intrinsics: Float[torch.Tensor, "3 3"]
+    intrinsics: Float[torch.Tensor, "cam 3 3"]
     world_2_cam: Float[torch.Tensor, "cam 4 4"]
     color_correction: Float[torch.Tensor, "cam 3 3"]
     se3_transform: UnbatchedSE3Transform

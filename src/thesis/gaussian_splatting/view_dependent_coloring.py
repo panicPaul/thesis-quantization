@@ -55,7 +55,8 @@ class ViewDependentColorMLP(nn.Module):
         """
         from gsplat.cuda._torch_impl import _eval_sh_bases_fast
 
-        C, N = view_directions.shape[:2]
+        C = cam_2_world.shape[0]
+        N = means.shape[0]
 
         # Compute view directions
         view_directions = means[None, :, :] - cam_2_world[:, None, :3, 3]

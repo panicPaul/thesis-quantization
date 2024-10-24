@@ -1,7 +1,10 @@
 """ Utilities."""
 
 import torch
+from beartype import BeartypeConf, BeartypeStrategy, beartype
 from jaxtyping import Float
+
+nobeartype = beartype(conf=BeartypeConf(strategy=BeartypeStrategy.O0))
 
 
 def rotation_matrix_to_quaternion(
@@ -104,28 +107,19 @@ def datum_to_device(datum, device: torch.device | str):
     return type(datum)(*new_datum)
 
 
-def apply_se3(
+def apply_se3_to_point(
     rotation: Float[torch.Tensor, "... 3 3"],
     translation: Float[torch.Tensor, "... 3"],
-    points: Float[torch.Tensor, "... 3"],
-    orientations: Float[torch.Tensor, "... 4]"] | None = None,
-) -> (Float[torch.Tensor, "... 3"]
-      | tuple[Float[torch.Tensor, "... 3"], Float[torch.Tensor, "... 4"]]):
-    """Apply the SE3 transform to the points.
+    point: Float[torch.Tensor, "... 3"],
+) -> Float[torch.Tensor, "... 3"]:
+    """Apply the SE3 transform to a single point."""
+    return torch.einsum("...ij,...j->...i", rotation, point) + translation
 
-    Args:
-        rotation: Rotation matrix. Shape: `(..., 3, 3)`.
-        translation: Translation vector. Shape: `(..., 3)`.
-        points: Points to transform. Shape: `(..., 3)`.
-        orientations: Orientations to apply. Shape: `(..., 4)`.
 
-    Returns:
-        Either the transformed points or the transformed points and orientations.
-    """
-    points = torch.einsum("...ij,...j->...i", rotation, points) + translation
-    if orientations is not None:
-        orientations = torch.norm(orientations, dim=-1, keepdim=True)
-        rotation_quat = rotation_matrix_to_quaternion(rotation)
-        orientations = quaternion_multiplication(rotation_quat, orientations)
-        return points, orientations
-    return points
+def apply_se3_to_orientation(
+    rotation: Float[torch.Tensor, "... 3 3"],
+    orientation: Float[torch.Tensor, "... 4"],
+) -> Float[torch.Tensor, "... 4"]:
+    """Apply the SE3 transform to an orientation."""
+    rotation_quat = rotation_matrix_to_quaternion(rotation)
+    return quaternion_multiplication(rotation_quat, orientation)
