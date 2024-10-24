@@ -9,7 +9,7 @@ from thesis.data_management import GaussianSplats
 
 def random_initialization(
     num_splats: int,
-    scene_scale: float = 1.0,
+    scene_scale: float = 0.2,
     initial_opacity: float = 0.1,
     feature_dim: int | None = None,
     colors_sh_degree: int = 3,

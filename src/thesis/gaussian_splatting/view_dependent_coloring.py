@@ -37,34 +37,27 @@ class ViewDependentColorMLP(nn.Module):
     def forward(
         self,
         features: Float[torch.Tensor, "n_splats feature_dim"],
-        # view_directions: Float[torch.Tensor, "cam n_splats 3"],
         means: Float[torch.Tensor, "n_splats 3"],
-        world_2_cam: Float[torch.Tensor, "cam 4 4"],
+        cam_2_world: Float[torch.Tensor, "cam 4 4"],
         cur_sh_degree: int,
     ) -> Float[torch.Tensor, "C N 3"]:
         """Adjust appearance based on embeddings.
 
         Args:
-            features (Tensor): per gaussian features.
-            view_directions (Tensor): view directions. Shape: (batch, num_dirs, 3).
-            cur_sh_degree (int): current sh degree.
+            features (Tensor): per gaussian features, shape: `(cam, n_splats, feature_dim)`.
+            means (Tensor): per gaussian means, shape: `(cam, n_splats, 3)`.
+            cam_2_world (Tensor): camera to world transformation, shape: `(cam, 4, 4)`.
+            cur_sh_degree (int): current SH degree.
 
 
         Returns:
-            (Tensor): updated colors. Shape: (batch, num_dirs, 3).
+            (Tensor): updated colors. Shape: (cam, n_splats, 3).
         """
         from gsplat.cuda._torch_impl import _eval_sh_bases_fast
 
         C, N = view_directions.shape[:2]
 
         # Compute view directions
-        cam_2_world = torch.zeros_like(world_2_cam)
-        cam_2_world[..., :3, :3] = world_2_cam[..., :3, :3].transpose(-2, -1)
-        cam_2_world[..., :3, 3] = -torch.bmm(
-            world_2_cam[..., :3, :3].transpose(-2, -1),
-            world_2_cam[..., :3, 3].unsqueeze(-1),
-        ).squeeze(-1)
-        cam_2_world[..., 3, 3] = 1
         view_directions = means[None, :, :] - cam_2_world[:, None, :3, 3]
 
         # GS features

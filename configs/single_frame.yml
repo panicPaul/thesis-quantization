@@ -1,38 +1,47 @@
-# Training for a single frame
+# ===== Configuration for single-frame training =====
 
-
-# Gaussian Splatting
+# ---> gaussian splatting settings
 gaussian_splatting_settings:
-  # general
-  feature_dim: 32
-  sh_degree: 3
-  initialization_mode: random
-  densification_mode: random
+
+  # pre-processing settings
   use_view_dependent_color_mlp: true
-  rasterization_mode: 'default'
-  # training
+
+  # rasterization_settings
+  sh_degree: 3
+
+  # post-processing settings
+  background_r: 0.5
+  background_g: 0.5
+  background_b: 0.5
+  screen_space_denoising_mode: none
+
+  # densification_settings
+  densification_mode: monte_carlo_markov_chain
+  refine_start_iteration: 500
+  refine_stop_iteration: 25_000
+  cap_max: 100_000
+
+  # initialization settings
+  initialization_mode: random 
+  initialization_points: 10_000
+
+  # losses
+  l1_image_loss: 1.0
+  ssim_image_loss: 0.1
+  ssim_denoised_image_loss: null
+  lpips_image_loss: 0.05
+  anisotropy_loss: 0.1
+  max_scale_loss: 10.0
+  local_rigidity_loss: null
+  background_loss: 0.1
+
+  # train settings
+  feature_dim: 32
   camera_batch_size: 1
-  sh_increase_interval: 1_000
+  train_iterations: 30_000
+  log_images_interval: 500
 
-random_initialization_settings:
-  num_splats: 10_000
-  scene_scale: 0.2
-  initial_opacity: 0.1
-
-
-
-
-# Rendering Settings
-3dgs_rasterization_settings:
-  rasterize_mode: 'antialiased'
-  radius_clip: 0.0
-  eps2d: 0.3 # 3 pixels
-
-2dgs_rasterization_settings:
-  radius_clip: 0.0
-  eps2d: 0.3 # 3 pixels
-
-# Optimization Settings
+# ---> Learning Rates
 learning_rates:
   # 3D Splatting
   means_lr: 1.6e-4
@@ -42,3 +51,4 @@ learning_rates:
   # Color MLP
   color_mlp_lr: 1e-3
   color_mlp_weight_decay: 1e-6
+

@@ -1,4 +1,5 @@
 """ Constants for the project. """
+import torch
 
 DATA_DIR_NERSEMBLE = "../new_master_thesis/data/nersemble/Paul-audio-856/856"
 """
@@ -38,3 +39,5 @@ FLAME_MODEL_PATH = "assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw r
 """ Path to the FLAME model. """
 FLAME_PARTS_PATH = "assets/flame/FLAME_masks.pkl"  # FLAME Vertex Masks
 """ Path to the FLAME parts. """
+
+DEFAULT_SE3 = torch.eye(4)
