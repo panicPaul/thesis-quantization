@@ -93,7 +93,7 @@ class SequenceManager:
 
     @property
     def cameras(
-        self,) -> tuple[Float[torch.Tensor, "3 3"], Float[torch.Tensor, "cam 4 4"], list[str]]:
+            self) -> tuple[Float[torch.Tensor, "3 3"], Float[torch.Tensor, "cam 4 4"], list[str]]:
         # auto-caching of the cameras
         if not hasattr(self, "_cameras"):
             self._cameras = self.load_camera(slice(0, None, None))

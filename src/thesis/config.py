@@ -1,9 +1,8 @@
 """ Some settings where dataclasses make sense. """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from omegaconf import DictConfig, OmegaConf, MISSING
-from omegaconf.listconfig import ListConfig
+from omegaconf import MISSING, DictConfig, OmegaConf
 
 
 @dataclass

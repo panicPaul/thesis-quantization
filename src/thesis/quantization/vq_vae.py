@@ -1,14 +1,15 @@
 """ Vector Quantized Variational Autoencoder (VQ-VAE) implementation. """
 
+from typing import Literal
+
 import lightning as pl
-from jaxtyping import Float
-from torch import nn
 import torch
+from einops import rearrange
+from jaxtyping import Float
+from omegaconf import DictConfig
+from torch import nn
 from torch.optim.adamw import AdamW
 from vector_quantize_pytorch import FSQ
-from einops import rearrange
-from typing import Literal
-from omegaconf import DictConfig
 
 # ==================================================================================== #
 #                                   Layers                                             #

@@ -22,7 +22,7 @@ gaussian_splatting_settings:
   cap_max: 100_000
 
   # initialization settings
-  initialization_mode: random 
+  initialization_mode: random
   initialization_points: 10_000
 
   # losses
@@ -51,4 +51,3 @@ learning_rates:
   # Color MLP
   color_mlp_lr: 1e-3
   color_mlp_weight_decay: 1e-6
-

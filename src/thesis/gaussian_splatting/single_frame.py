@@ -1,27 +1,28 @@
 """ Gaussian Splatting on a single time step. Mostly for debugging. """
 
 import math
-from thesis.config import load_config
+import time
+from functools import partial
+
 import lightning as pl
 import nerfview
 import numpy as np
 import torch
+from einops import rearrange, repeat
 from gsplat import DefaultStrategy, MCMCStrategy, rasterization, rasterization_2dgs
 from jaxtyping import Float
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch import nn
 from torch.optim import Adam
-from thesis.config import GaussianSplattingSettings
+from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+
+from thesis.config import GaussianSplattingSettings, load_config
+from thesis.constants import DEFAULT_SE3
 from thesis.data_management.data_classes import SingleFrameData
 from thesis.gaussian_splatting.initialize_splats import random_initialization
 from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
 from thesis.utils import apply_se3
-from einops import repeat, rearrange
-from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-import time
-from functools import partial
-from thesis.constants import DEFAULT_SE3
 
 
 class GaussianSplattingSingleFrame(pl.LightningModule):
@@ -188,9 +189,9 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             image_height (int): Image height.
             image_width (int): Image width.
             color_correction (torch.Tensor): Color correction matrix, shape: `(cam, 3, 3)`.
-            cur_sh_degree (int): Current spherical harmonic degree. If `None`, the maximum 
+            cur_sh_degree (int): Current spherical harmonic degree. If `None`, the maximum
                 degree is used.
-            se3_transform (torch.Tensor): SE3 transform matrix, shape: `(cam, 4, 4)`. If 
+            se3_transform (torch.Tensor): SE3 transform matrix, shape: `(cam, 4, 4)`. If
                 `None`, no transformation is applied.
             background (torch.Tensor): Background color, shape: `(cam, H, W, 3)`. If `None`,
                 the default background is used.
@@ -214,7 +215,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         infos = {}
         infos = {"background": background}
         assert world_2_cam is None != cam_2_world is None, \
-            'Either world_2_cam or cam_2_world should be provided'
+            'Either world_2_cam or cam_2_world should be provided'  # noqa E711
         if world_2_cam is not None:
             cam_2_world = torch.zeros_like(world_2_cam)
             cam_2_world[..., :3, :3] = world_2_cam[..., :3, :3].transpose(-2, -1)
@@ -422,7 +423,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             world_2_cam=batch.world_2_cam,
             image_height=int(batch.image.shape[1]),
             image_width=int(batch.image.shape[2]),
-            #color_correction=batch.color_correction, # TODO: fix color correction
+            # color_correction=batch.color_correction, # TODO: fix color correction
             cur_sh_degree=self.get_cur_sh_degree(self.global_step),
             se3_transform=batch.se3_transform,
         )
