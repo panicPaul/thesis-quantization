@@ -72,4 +72,4 @@ class ViewDependentColorMLP(nn.Module):
         # Get colors
         h = torch.cat([features, sh_bases], dim=-1)
         colors = self.color_head(h)
-        return colors
+        return nn.functional.sigmoid(colors)

@@ -31,7 +31,7 @@ class GaussianSplattingSettings:
     background_b: float = 0.5
     screen_space_denoising_mode: str = "none"
 
-    # densfication settings
+    # densification settings
     densification_mode: str = "default"
     refine_start_iteration: int = 500
     refine_stop_iteration: int | float = 0.5  # should be around 85-90% for mcmc

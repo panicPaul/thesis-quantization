@@ -142,7 +142,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 self.rasterize = partial(
                     rasterization_2dgs,
                     radius_clip=gaussian_splatting_settings.radius_clip,
-                    dist_loss=gaussian_splatting_settings.dist_loss,
+                    distloss=gaussian_splatting_settings.dist_loss,
                 )
             case _:
                 raise ValueError("Unknown rasterization mode: "
@@ -284,21 +284,30 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                                                            cur_sh_degree)
         else:
             colors = self.splats["colors"]
+        scales = torch.exp(self.splats["scales"])
+        opacities = torch.sigmoid(self.splats["opacities"])
 
         # ------------------------------- Rasterization ------------------------------- #
-        images, alphas, new_infos = self.rasterize(
+        ret = self.rasterize(
             means=means,
             quats=quats,
-            scales=self.splats["scales"],
-            opacities=self.splats["opacities"],
+            scales=scales,
+            opacities=opacities,
             colors=colors,
             render_mode="RGB",
             viewmats=world_2_cam,
             Ks=intrinsics,
             width=image_width,
             height=image_height,
+            absgrad=self.gaussian_splatting_settings.densification_mode == 'default',
             sh_degree=cur_sh_degree if not hasattr(self, "view_dependent_color_mlp") else None,
+            packed=False,
         )
+        match self.gaussian_splatting_settings.rasterization_mode:
+            case "default" | "3dgs":
+                images, alphas, new_infos = ret
+            case "2dgs":
+                images, alphas, _, _, _, _, new_infos = ret
         infos = infos | new_infos
 
         # ------------------------------- Post-processing ------------------------------ #
@@ -343,7 +352,12 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         """Render function for NerfView."""
 
         image_width, image_height = img_wh
-        cam_2_world = torch.tensor(camera_state.c2w).unsqueeze(0).float().cuda()
+        c2w = camera_state.c2w
+        # maybe flip them here?
+        hacky_world_transform = np.array([[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
+                                         dtype=np.float32)
+        c2w = hacky_world_transform @ c2w
+        cam_2_world = torch.tensor(c2w).unsqueeze(0).float().cuda()
         intrinsics = torch.tensor(camera_state.get_K(img_wh)).unsqueeze(0).float().cuda()
         se3 = UnbatchedSE3Transform(
             rotation=DEFAULT_SE3_ROTATION.unsqueeze(0).cuda(),
@@ -419,10 +433,10 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         # lpips for rendered images
         if self.gaussian_splatting_settings.lpips_image_loss is not None:
             pred = (rasterized_images-0.5) * 2
-            target = (target_image_foreground-0.5) * 2
-            pred = pred.clamp(-0.99, 0.99)
-            target = target.clamp(-0.99, 0.99)
-            lpips_loss = self.lpips(pred, target)
+            tgt = (target_image_foreground-0.5) * 2
+            pred = rearrange(pred, "cam H W c -> cam c H W")
+            tgt = rearrange(tgt, "cam H W c -> cam c H W")
+            lpips_loss = self.lpips(pred, tgt)
             loss_dict["lpips_loss"] = lpips_loss
             loss = loss + self.gaussian_splatting_settings.lpips_image_loss * lpips_loss
         # anisotropy loss
@@ -542,7 +556,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                     dim=1,
                 ).detach().cpu().numpy())
             canvas = (canvas * 255).astype(np.uint8)
-            self.writer.add_image("train/render", canvas, self.global_step, dataformats="HWC")
+            writer = self.logger.experiment
+            writer.add_image("train/render", canvas, self.global_step, dataformats="HWC")
             # raw render
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
                 canvas = (
@@ -551,13 +566,14 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                         dim=1,
                     ).detach().cpu().numpy())
                 canvas = (canvas * 255).astype(np.uint8)
-                self.writer.add_image(
-                    "train/raw_render", canvas, self.global_step, dataformats="HWC")
+                writer.add_image("train/raw_render", canvas, self.global_step, dataformats="HWC")
 
         # Iteration time logging
         time_elapsed = time.time() - t
-        its = time_elapsed / batch.image.shape[0]
+        its = 1 / time_elapsed
+        fps = rendered_images.shape[0] / time_elapsed
         self.log('train/its', its, on_step=True, on_epoch=False, prog_bar=True)
+        self.log('train/fps', fps, on_step=True, on_epoch=False, prog_bar=True)
 
         # Resume the viewer if needed
         if self.enable_viewer:

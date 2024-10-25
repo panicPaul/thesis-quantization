@@ -40,11 +40,13 @@ FLAME_MODEL_PATH = "assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw r
 FLAME_PARTS_PATH = "assets/flame/FLAME_masks.pkl"  # FLAME Vertex Masks
 """ Path to the FLAME parts. """
 
+# should all be from the same sequence and timestep
 DEFAULT_SE3_ROTATION = torch.tensor(
-    [[0.8912, 0.0324, 0.4526], [-0.1756, 0.9446, 0.2781], [-0.4186, -0.3275, 0.8472]],
+    [[-0.85767704, 0.25412178, -0.44700348], [-0.12943351, -0.9480447, -0.29061666],
+     [-0.4976313, -0.19139802, 0.8460081]],
     dtype=torch.float32)
 """ Default SE3 rotation. """
-DEFAULT_SE3_TRANSLATION = torch.tensor([0.0602, 0.0821, -0.1438], dtype=torch.float32)
+DEFAULT_SE3_TRANSLATION = torch.tensor([0.04575331, 0.06610457, -0.05820158], dtype=torch.float32)
 """ Default SE3 translation. """
-
 CANONICAL_PCD = '/home/schlack/master-thesis/data/Paul-audio-85/085/sequences/SEN-05-glow_eyes_sweet_girl/timesteps/frame_00072/colmap/pointclouds/pointcloud_16.pcd'  # noqa
+""" Canonical point cloud. """
