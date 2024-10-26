@@ -7,10 +7,18 @@ Audio-driven DF
 Audio[t] -> encoder -> quantizer -> decoder -> flame[t] (-> flame df)
 
 
+per_gaussian_feature -> flame_vertices
+
+s03, t94 has eyes half closed
 # To Do's:
 
-- [ ] update repo
+- [ ] make single view dataset an infinite dataset; should help with speed issues
+- [ ] depth view toggle in viewer
+- [ ] sh coloring
+- [ ] debugging of whatever causes the training to be so slow
 
+- [ ] use image masks to create torso/ neck code
+- [ ] use color masks for lip loss
 
 management
 
