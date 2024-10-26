@@ -1,1 +1,16 @@
 # Quantization configuration
+
+model:
+  feature_dim: 1024
+  channel_multiplier: 2.0
+  latent_dim: 64
+  levels: [8, 6, 5]
+
+training:
+  loss_fn: mse
+  lr: 3e-4
+  training_steps: 100_000
+  batch_size: 32
+  window_size: 16
+  num_train_workers: 8
+  num_val_workers: 4

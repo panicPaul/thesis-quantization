@@ -65,6 +65,8 @@ class ImageSequenceLoader(_SequenceLoader):
         self,
         sequence: str | int,
         data_dir: str = DATA_DIR_NERSEMBLE,
+        intrinsics_width: int = 1100,
+        intrinsics_height: int = 1604,
         image_downsampling_factor: int | float = 1,
         cameras: list[int] = TRAIN_CAMS,
     ) -> None:
@@ -72,11 +74,15 @@ class ImageSequenceLoader(_SequenceLoader):
         Args:
             sequence (str): Sequence name.
             data_dir (str): Directory containing the data.
+            intrinsics_width (int): Width of the intrinsics.
+            intrinsics_height (int): Height of the intrinsics.
             image_downsampling_factor (int | float): Downsampling factor for the images,
-                masks and intrinsics.
+                masks and intrinsics w.r.t. the intrinsics.
             cameras (list[int]): List of camera IDs to use.
         """
         self.init(sequence, data_dir, image_downsampling_factor, cameras)
+        self.intrinsics_width = intrinsics_width
+        self.intrinsics_height = intrinsics_height
 
     def __getitem__(
         self,
@@ -114,11 +120,12 @@ class ImageSequenceLoader(_SequenceLoader):
                 f"cam_{self.serials[c]}.jpg",
             )
             image = Image.open(filename)
-            if self.image_downsampling_factor > 1:
-                image = image.resize((
-                    int(image.size[0] // self.image_downsampling_factor),
-                    int(image.size[1] // self.image_downsampling_factor),
-                ))
+
+            image = image.resize((
+                int(self.intrinsics_width // self.image_downsampling_factor),
+                int(self.intrinsics_height // self.image_downsampling_factor),
+            ),
+                                 resample=Image.BILINEAR)
             return torch.tensor(np.array(image).astype(np.float32)) / 255.0
 
         match idx:
@@ -186,13 +193,15 @@ class ImageSequenceLoader(_SequenceLoader):
 # ==================================================================================== #
 
 
-class SegmentationMaskSequenceLoader(_SequenceLoader):
-    """Loads the segmentation masks for a given sequence from disk."""
+class AlphaMapSequenceLoader(_SequenceLoader):
+    """Loads the alpha map for a given sequence from disk."""
 
     def __init__(
         self,
         sequence: str | int,
         data_dir: str = DATA_DIR_NERSEMBLE,
+        intrinsics_width: int = 1100,
+        intrinsics_height: int = 1604,
         image_downsampling_factor: int | float = 1,
         cameras: list[int] = TRAIN_CAMS,
     ) -> None:
@@ -205,6 +214,8 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
             cameras (list[int]): List of camera IDs to use.
         """
         self.init(sequence, data_dir, image_downsampling_factor, cameras)
+        self.intrinsics_width = intrinsics_width
+        self.intrinsics_height = intrinsics_height
 
     def __getitem__(
         self,
@@ -243,9 +254,10 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
             )
             image = Image.open(filename)
             image = image.resize((
-                int(image.size[0] // (self.image_downsampling_factor * 2)),
-                int(image.size[1] // (self.image_downsampling_factor * 2)),
-            ))
+                int(self.intrinsics_width // (self.image_downsampling_factor)),
+                int(self.intrinsics_height // (self.image_downsampling_factor)),
+            ),
+                                 resample=Image.BILINEAR)
             return torch.tensor(np.array(image).astype(np.float32)) / 255.0
 
         match idx:
@@ -478,3 +490,138 @@ class AudioFeaturesSequenceLoader(_SequenceLoader):
             return self.audio_features[time_step]
         else:
             return torch.load(self.filename, weights_only=False)["audio_features"][time_step]
+
+
+# ==================================================================================== #
+#                             Mask Features                                            #
+# ==================================================================================== #
+
+
+class SegmentationMaskSequenceLoader(_SequenceLoader):
+    """Loads the images for a given sequence from disk."""
+
+    def __init__(
+        self,
+        sequence: str | int,
+        data_dir: str = DATA_DIR_NERSEMBLE,
+        intrinsics_width: int = 1100,
+        intrinsics_height: int = 1604,
+        image_downsampling_factor: int | float = 1,
+        cameras: list[int] = TRAIN_CAMS,
+    ) -> None:
+        """
+        Args:
+            sequence (str): Sequence name.
+            data_dir (str): Directory containing the data.
+            intrinsics_width (int): Width of the intrinsics.
+            intrinsics_height (int): Height of the intrinsics.
+            image_downsampling_factor (int | float): Downsampling factor for the images,
+                masks and intrinsics.
+            cameras (list[int]): List of camera IDs to use.
+        """
+        self.init(sequence, data_dir, image_downsampling_factor, cameras)
+        self.intrinsics_width = intrinsics_width
+        self.intrinsics_height = intrinsics_height
+
+    def __getitem__(
+        self,
+        idx: (int
+              | slice
+              | tuple[int, int]
+              | tuple[slice, int]
+              | tuple[int, slice]
+              | tuple[slice, slice]
+              | tuple[int, tuple]
+              | tuple[slice, tuple]),
+    ) -> (Float[torch.Tensor, "time cam H W 3"]
+          | Float[torch.Tensor, "time H W 3"]
+          | Float[torch.Tensor, "cam H W 3"]
+          | Float[torch.Tensor, "H W 3"]):
+        """
+        Get the image for a given sequence, time step, and camera.
+
+        Args:
+            sequence (str): Sequence name.
+            idx: Index
+
+        Returns:
+            (torch.Tensor): Image tensor. Shape (..., cam, H, W, 3).
+        """
+
+        def load_single_image(t: int, c: int) -> Float[torch.Tensor, "H W 3"]:
+            filename = os.path.join(
+                self.data_dir,
+                "sequences",
+                self.sequence,
+                "timesteps",
+                f"frame_{t:05d}",
+                "facer_segmentation_masks",
+                f"color_segmentation_cam_{self.serials[c]}.png",
+            )
+            image = Image.open(filename)
+            # hard coded for my dataset
+            image = image.resize((
+                int(self.intrinsics_width // self.image_downsampling_factor),
+                int(self.intrinsics_height // self.image_downsampling_factor),
+            ),
+                                 resample=Image.BILINEAR)
+            return torch.tensor(np.array(image).astype(np.float32)) / 255.0
+
+        match idx:
+            case int(t):
+                # Single time step, all cameras
+                return torch.stack([load_single_image(t, c) for c in range(len(self.serials))])
+
+            case slice() as s:
+                # Multiple time steps, all cameras
+                time_steps = range(*s.indices(len(self)))
+                return torch.stack([
+                    torch.stack([load_single_image(t, c)
+                                 for c in range(len(self.serials))])
+                    for t in time_steps
+                ])
+
+            case (int(t), int(c)):
+                # Single time step, single camera
+                return load_single_image(t, c)
+
+            case (slice() as s, int(c)):
+                # Multiple time steps, single camera
+                time_steps = range(*s.indices(len(self)))
+                return torch.stack([load_single_image(t, c) for t in time_steps])
+
+            case (int(t), slice() as s):
+                # Single time step, multiple cameras
+                camera_ids = range(*s.indices(len(self.serials)))
+                return torch.stack([load_single_image(t, c) for c in camera_ids])
+
+            case (slice() as s, slice() as c):
+                # Multiple time steps, multiple cameras
+                time_steps = range(*s.indices(len(self)))
+                camera_ids = range(*c.indices(len(self.serials)))
+                return torch.stack([
+                    torch.stack([load_single_image(t, c) for c in camera_ids]) for t in time_steps
+                ])
+
+            case (int(t), tuple() as c):
+                # Single time step, multiple cameras (selected)
+                camera_ids = c
+                return torch.stack([load_single_image(t, c) for c in camera_ids])
+
+            case (slice() as s, tuple() as c):
+                # Multiple time steps, multiple cameras (selected)
+                time_steps = range(*s.indices(len(self)))
+                camera_ids = c
+                return torch.stack([
+                    torch.stack([load_single_image(t, c) for c in camera_ids]) for t in time_steps
+                ])
+
+            case _:
+                raise ValueError("Invalid index.")
+
+    def __len__(self) -> int:
+        return len(self.frames)
+
+    @property
+    def shape(self) -> tuple[int, int, int, int, int]:
+        return len(self), len(self.camera_ids), self.image_height, self.image_width, 3

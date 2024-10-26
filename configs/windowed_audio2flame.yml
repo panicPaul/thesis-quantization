@@ -1,0 +1,13 @@
+
+model:
+  initial_projection: 128
+  window_size: 9
+  hidden_dim: 128
+  num_layers: 4
+
+training:
+  batch_size: 32
+  training_steps: 100_000
+  learning_rate: 3e-4
+  num_train_workers: 8
+  num_val_workers: 4

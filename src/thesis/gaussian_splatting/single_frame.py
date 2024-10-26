@@ -409,31 +409,33 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         background = infos['background']
         background = repeat(
             background, "f -> cam H W f", cam=mask.shape[0], H=mask.shape[1], W=mask.shape[2])
-        target_image_foreground = target_images*mask + (1-mask) * background
         rasterized_images = infos['rasterized_images']
-        # l1 loss for rasterized images
+        target_images = target_images*mask + (1-mask) * background
+        denoised_foreground = rendered_images*mask + (1-mask) * background  # use the target mask
+        raw_foreground = rasterized_images*mask + (1-mask) * background  # use the target mask
+        # l1 (foreground) loss for rasterized images
         if self.gaussian_splatting_settings.l1_image_loss is not None:
-            l1_loss = nn.functional.l1_loss(rasterized_images, target_image_foreground)
+            l1_loss = torch.sum(torch.abs(raw_foreground - target_images), dim=-1).mean()
             loss_dict["l1_loss"] = l1_loss
             loss = loss + self.gaussian_splatting_settings.l1_image_loss * l1_loss
         # ssim loss for rasterized images
         if self.gaussian_splatting_settings.ssim_image_loss is not None:
-            pred = rearrange(rasterized_images, "cam H W c -> cam c H W")
-            tgt = rearrange(target_image_foreground, "cam H W c -> cam c H W")
+            pred = rearrange(raw_foreground, "cam H W c -> cam c H W")
+            tgt = rearrange(target_images, "cam H W c -> cam c H W")
             ssim_loss = self.ssim(pred, tgt)
             loss_dict["ssim_loss"] = ssim_loss
             loss = loss + self.gaussian_splatting_settings.ssim_image_loss * ssim_loss
         # ssim loss for denoised images
         if self.gaussian_splatting_settings.ssim_denoised_image_loss is not None:
-            pred = rearrange(rendered_images, "cam H W c -> cam c H W")
+            pred = rearrange(denoised_foreground, "cam H W c -> cam c H W")
             tgt = rearrange(target_images, "cam H W c -> cam c H W")
             ssim_loss = self.ssim(pred, tgt)
             loss_dict["ssim_denoised_loss"] = ssim_loss
             loss = loss + self.gaussian_splatting_settings.ssim_denoised_image_loss * ssim_loss
         # lpips for rendered images
         if self.gaussian_splatting_settings.lpips_image_loss is not None:
-            pred = (rasterized_images-0.5) * 2
-            tgt = (target_image_foreground-0.5) * 2
+            pred = (raw_foreground-0.5) * 2
+            tgt = (target_images-0.5) * 2
             pred = rearrange(pred, "cam H W c -> cam c H W")
             tgt = rearrange(tgt, "cam H W c -> cam c H W")
             lpips_loss = self.lpips(pred, tgt)
@@ -639,6 +641,8 @@ def train(config_path: str) -> None:
     if config.compile:
         model._compile()
 
+    torch.set_float32_matmul_precision('high')
+
     # sanity check
     params = model.splats
     optimizers, schedulers = model.configure_optimizers()
@@ -660,10 +664,11 @@ def train(config_path: str) -> None:
 
     # start viewer
     model.cuda()
-    model.start_viewer(mode="training")
+    if config.enable_viewer:
+        model.start_viewer(mode="training")
 
     # train
-    logger = TensorBoardLogger("tb_logs", name="my_model")
+    logger = TensorBoardLogger("tb_logs/single_frame", name="my_model")
     trainer = pl.Trainer(
         logger=logger,
         max_steps=config.gaussian_splatting_settings.train_iterations,

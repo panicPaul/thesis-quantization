@@ -26,10 +26,8 @@ def pydub_to_np(audio: pydub.AudioSegment) -> tuple[np.ndarray, int]:
         the sample rate.
     """
     return (
-        np.array(audio.get_array_of_samples(), dtype=np.float32)
-        .reshape((-1, audio.channels))
-        .squeeze(1)
-        / (1 << (8 * audio.sample_width - 1)),
+        np.array(audio.get_array_of_samples(), dtype=np.float32).reshape(
+            (-1, audio.channels)).squeeze(1) / (1 << (8 * audio.sample_width - 1)),
         audio.frame_rate,
     )
 
@@ -52,9 +50,7 @@ def clean_single_audio_file(
             False.
     """
     if input_path == output_path and not overwrite_input:
-        raise ValueError(
-            "Input and output path cannot be the same without explicit overwrite."
-        )
+        raise ValueError("Input and output path cannot be the same without explicit overwrite.")
     if output_path is None and not overwrite_input:
         raise ValueError("Output path must be provided if overwrite_input is False.")
     if overwrite_input:
@@ -69,9 +65,7 @@ def clean_single_audio_file(
         audio, sr = sf.read(input_path)
     reduced_noise = nr.reduce_noise(y=audio, sr=sr, thresh_n_mult_nonstationary=1)
     if output_sampling_rate is not None:
-        reduced_noise = librosa.resample(
-            reduced_noise, orig_sr=sr, target_sr=output_sampling_rate
-        )
+        reduced_noise = librosa.resample(reduced_noise, orig_sr=sr, target_sr=output_sampling_rate)
     else:
         output_sampling_rate = sr
     sf.write(output_path, reduced_noise, samplerate=output_sampling_rate)
@@ -94,10 +88,8 @@ def clean_audio_files(
 
     for sequence_name in tqdm(sequence_names, desc="Cleaning audio files"):
         clean_single_audio_file(
-            input_path=(
-                f"{data_directory}/sequences/{sequence_name}/"
-                "audio/audio_recording.ogg"
-            ),
+            input_path=(f"{data_directory}/sequences/{sequence_name}/"
+                        "audio/audio_recording.ogg"),
             output_path=f"{data_directory}/sequences/{sequence_name}/"
             "audio/audio_recording_cleaned.ogg",
         )
@@ -123,11 +115,8 @@ def resample_audio_files(
 
     for sequence_name in tqdm(sequence_names, desc="Resampling audio files"):
         audio, sr = sf.read(
-            f"{data_directory}/sequences/{sequence_name}/audio/audio_recording.ogg"
-        )
-        resampled_audio = librosa.resample(
-            audio, orig_sr=sr, target_sr=target_sampling_rate
-        )
+            f"{data_directory}/sequences/{sequence_name}/audio/audio_recording.ogg")
+        resampled_audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sampling_rate)
         sf.write(
             f"{data_directory}/sequences/{sequence_name}/"
             "audio/audio_recording_resampled.ogg",

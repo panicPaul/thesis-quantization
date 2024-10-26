@@ -1,15 +1,21 @@
 """ Vector Quantized Variational Autoencoder (VQ-VAE) implementation. """
 
+import argparse
 from typing import Literal
 
 import lightning as pl
 import torch
 from einops import rearrange
 from jaxtyping import Float
-from omegaconf import DictConfig
+from lightning.pytorch.loggers import TensorBoardLogger
+from omegaconf import OmegaConf
 from torch import nn
 from torch.optim.adamw import AdamW
-from vector_quantize_pytorch import FSQ
+from torch.utils.data import DataLoader
+from vector_quantize_pytorch import LFQ
+
+from thesis.constants import TEST_SEQUENCES, TRAIN_SEQUENCES
+from thesis.data_management import QuantizationDataset
 
 # ==================================================================================== #
 #                                   Layers                                             #
@@ -21,6 +27,7 @@ class ResBlock(nn.Module):
 
     def __init__(self, in_channels: int, out_channels: int, kernel_size=3) -> None:
         """Residual Block from MAGVIT"""
+        super().__init__()
         self.residual_connection = (
             nn.Identity() if in_channels == out_channels else nn.Conv1d(
                 in_channels, out_channels, kernel_size=1))
@@ -28,17 +35,17 @@ class ResBlock(nn.Module):
             in_channels,
             out_channels,
             kernel_size,
-            padding="reflect",
+            padding_mode="reflect",
             padding=kernel_size // 2,
         )
         self.conv_2 = nn.Conv1d(
             out_channels,
             out_channels,
             kernel_size,
-            padding="reflect",
+            padding_mode="reflect",
             padding=kernel_size // 2,
         )
-        self.group_norm_1 = nn.GroupNorm(32, out_channels)  # as per the paper
+        self.group_norm_1 = nn.GroupNorm(32, in_channels)  # as per the paper
         self.group_norm_2 = nn.GroupNorm(32, out_channels)
 
     def forward(
@@ -60,6 +67,7 @@ class ResBlockDown(nn.Module):
 
     def __init__(self, in_channels: int, out_channels: int, kernel_size=3) -> None:
         """Residual Block from MAGVIT with downsampling"""
+        super().__init__()
         self.residual_connection = (
             nn.Identity() if in_channels == out_channels else nn.Conv1d(
                 in_channels, out_channels, kernel_size=1))
@@ -98,13 +106,14 @@ class UpSampling(nn.Module):
 
     def __init__(self, channels: int, kernel_size: int = 3) -> None:
         """UpSampling module from MAGVIT"""
+        super().__init__()
         # nearest neighbor upsampling
         self.upsample = nn.Upsample(scale_factor=2, mode="nearest")
         self.conv = nn.Conv1d(
             channels,
             channels,
             kernel_size,
-            padding="reflect",
+            padding_mode="reflect",
             padding=kernel_size // 2,
         )
 
@@ -128,11 +137,10 @@ class VQ_VAE(pl.LightningModule):
         self,
         feature_dim: int,
         channel_multiplier: float = 1.0,
-        latent_dim: int = 256,
+        latent_dim: int = 64,
         levels: list[int] = [8, 6, 5],
         lr: float = 3e-4,
         weight_decay: float = 0.01,
-        training_steps: int = 100_000,
         loss_fn: Literal["mse", "mae", "flame_vertex"] = "mse",
     ) -> None:
         """
@@ -152,7 +160,9 @@ class VQ_VAE(pl.LightningModule):
         self.save_hyperparameters()
         self.lr = lr
         self.weight_decay = weight_decay
-        self.training_steps = training_steps
+        self.levels = torch.tensor(levels)
+        # codebook_size = np.prod(levels)
+        # histogram = torch.zeros(codebook_size, dtype=torch.int64)
 
         input_layer = nn.Conv1d(
             feature_dim, int(64 * channel_multiplier), kernel_size=3, padding=1)
@@ -179,7 +189,14 @@ class VQ_VAE(pl.LightningModule):
             nn.SiLU(),
             nn.Conv1d(int(128 * channel_multiplier), latent_dim, 1),
         )
-        self.quantization = FSQ(levels=levels, dim=latent_dim)
+        self.quantization_projection_in = nn.Linear(latent_dim, 8)
+        self.quantization = LFQ(
+            codebook_size=256,
+            scale_trick=True,
+            entropy_loss_weight=0.1,
+            commitment_loss_weight=0.25,
+        )
+        self.quantization_projection_out = nn.Linear(8, latent_dim)
         self.decoder = nn.Sequential(
             nn.Conv1d(latent_dim, int(128 * channel_multiplier), 1),
             # batch x 128c x time / 4
@@ -221,33 +238,51 @@ class VQ_VAE(pl.LightningModule):
 
     # ================================================================================ #
 
-    def forward(
-        self, x: Float[torch.Tensor, "batch feature_dim time"]
-    ) -> Float[torch.Tensor, "batch feature_dim time"]:
+    def forward(self, x: Float[torch.Tensor, "batch time feature_dim"]):
+        #  -> tuple[Float[torch.Tensor, "batch time feature_dim"], Int[torch.Tensor, "batch time"],
+        #            Any]:
         """Forward pass of the VQ-VAE"""
+        x = rearrange(x, "batch time feature_dim -> batch feature_dim time")
         x = self.encoder(x)
-        x = rearrange(x, "batch latent_dim time -> batch time latent_dim").unsqueeze(-1)
-        x, _ = self.quantization(x)
-        x = rearrange(x.squeeze(-1), "batch time latent_dim -> batch latent_dim time")
+        x = rearrange(x, "batch latent_dim time -> batch time latent_dim")
+        x = self.quantization_projection_in(x)
+        x, indices, aux_loss = self.quantization.forward(x)
+        x = self.quantization_projection_out(x)
+        # TODO: get all fine grained losses
+        x = rearrange(x, "batch time latent_dim -> batch latent_dim time")
         x = self.decoder(x)
-        return x
+        x = rearrange(x, "batch feature_dim time -> batch time feature_dim")
+        return x, indices, aux_loss
 
     # ================================================================================ #
 
-    def training_step(self, x: Float[torch.Tensor, "batch feature_dim time"]) -> dict:
+    def training_step(self, batch) -> Float[torch.Tensor, ""]:
         """Training step for the VQ-VAE"""
         # TODO: doesn't work for flame yet but we can adjust it later
-        x_hat = self(x)
-        loss = self.loss_fn(x_hat, x)
-        self.log("train_loss", loss)
-        return {"loss": loss}
+        _, _, x = batch
+        x_hat, indices, aux_loss = self.forward(x)
+        reconstruction_loss = self.loss_fn(x_hat, x)
+        loss = reconstruction_loss + 50*aux_loss
+        self.log("train/loss", loss, prog_bar=True)
+        self.log("train/reconstruction_loss", reconstruction_loss, prog_bar=False)
+        self.log("train/aux_loss", aux_loss, prog_bar=False)
+        # update histogram
 
-    def val_step(self, x: Float[torch.Tensor, "batch feature_dim time"]) -> dict:
+        return loss
+
+    def on_train_epoch_end(self):
+        return super().on_train_epoch_end()
+
+    def validation_step(self, batch) -> Float[torch.Tensor, ""]:
         """Validation step for the VQ-VAE"""
-        x_hat = self(x)
-        loss = self.loss_fn(x_hat, x)
-        self.log("val_loss", loss)
-        return {"loss": loss}
+        _, _, x = batch
+        x_hat, indices, aux_loss = self.forward(x)
+        reconstruction_loss = self.loss_fn(x_hat, x)
+        loss = reconstruction_loss + aux_loss
+        self.log("val/loss", loss, prog_bar=True)
+        self.log("val/reconstruction_loss", reconstruction_loss, prog_bar=False)
+        self.log("val/aux_loss", aux_loss, prog_bar=False)
+        return loss
 
     # ================================================================================ #
 
@@ -257,6 +292,50 @@ class VQ_VAE(pl.LightningModule):
 # ==================================================================================== #
 
 
-def train_vq_vae(config: DictConfig) -> None:
+def train_vq_vae(config_path: str) -> None:
     """Train the VQ-VAE model."""
-    pass
+    config = OmegaConf.load(config_path)
+
+    # setup model
+    model = VQ_VAE(
+        lr=config.training.lr,
+        loss_fn=config.training.loss_fn,
+        **config.model,
+    )
+
+    # setup data
+    train_set = QuantizationDataset(
+        sequences=TRAIN_SEQUENCES, window_size=config.training.window_size)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=config.training.batch_size,
+        num_workers=config.training.num_train_workers)
+    val_set = QuantizationDataset(
+        sequences=TEST_SEQUENCES, window_size=config.training.window_size)
+    val_loader = DataLoader(
+        val_set,
+        batch_size=config.training.batch_size,
+        num_workers=config.training.num_val_workers)
+
+    # setup trainer
+    logger = TensorBoardLogger("tb_logs/quantization", name="my_model")
+    trainer = pl.Trainer(
+        logger=logger,
+        max_steps=config.training.training_steps,
+    )
+
+    # train
+    trainer.fit(model, train_loader, val_loader)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Train quantization.")
+    parser.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        default="configs/quantization.yml",
+        help="Path to the configuration file.")
+    args = parser.parse_args()
+
+    train_vq_vae(args.config)

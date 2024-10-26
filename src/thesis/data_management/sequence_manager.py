@@ -15,6 +15,7 @@ from jaxtyping import Float
 from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS
 from thesis.data_management.data_classes import SingleFrameData
 from thesis.data_management.primitives_loader import (
+    AlphaMapSequenceLoader,
     AudioFeaturesSequenceLoader,
     FlameParamsSequenceLoader,
     ImageSequenceLoader,
@@ -73,12 +74,26 @@ class SequenceManager:
         self.frames = sorted([int(f.split("_")[1]) for f in frames])
 
         # get the primitive loaders
-        self.images = ImageSequenceLoader(sequence, data_dir, image_downsampling_factor, cameras)
-        self.segmentation_masks = SegmentationMaskSequenceLoader(sequence, data_dir,
-                                                                 image_downsampling_factor,
-                                                                 cameras)
-        self.flame_params = FlameParamsSequenceLoader(sequence, data_dir,
-                                                      image_downsampling_factor, cameras)
+        self.images = ImageSequenceLoader(
+            sequence=sequence,
+            data_dir=data_dir,
+            image_downsampling_factor=image_downsampling_factor,
+            cameras=cameras)
+        self.segmentation_masks = AlphaMapSequenceLoader(
+            sequence=sequence,
+            data_dir=data_dir,
+            image_downsampling_factor=image_downsampling_factor,
+            cameras=cameras)
+        self.segmentation_masks = SegmentationMaskSequenceLoader(
+            sequence=sequence,
+            data_dir=data_dir,
+            image_downsampling_factor=image_downsampling_factor,
+            cameras=cameras)
+        self.flame_params = FlameParamsSequenceLoader(
+            sequence=sequence,
+            data_dir=data_dir,
+            image_downsampling_factor=image_downsampling_factor,
+            cameras=cameras)
         self.se3_transforms = SE3TransformSequenceLoader(sequence, data_dir,
                                                          image_downsampling_factor, cameras)
         self.audio_features = AudioFeaturesSequenceLoader(
@@ -285,7 +300,7 @@ class SequenceManager:
         if len(cameras) == 1:
             image = image.unsqueeze(0)
             segmentation_mask = segmentation_mask.unsqueeze(0)
-        intrinsics = repeat(intrinsics, "(cam m) n -> cam m n", cam=len(cameras))
+        intrinsics = repeat(intrinsics, "m n -> cam m n", cam=len(cameras))
 
         return SingleFrameData(
             image=image,
