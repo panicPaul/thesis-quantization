@@ -5,6 +5,7 @@ channels:
   - defaults
   - nvidia/label/cuda-12.4.0
   - nvidia
+  #- pytorch3d
 
 # TODO: move all dependencies that can be moved to pip to pip
 dependencies:
@@ -19,9 +20,11 @@ dependencies:
   - gcc=11.*
   - gxx=11.*
   #- faiss-gpu=1.8.0
+  # pytorch3d
 # conda install pytorch-cluster -c pyg
 
   #conda install menpo::osmesa
+
 
   - pip:
     # github dependencies

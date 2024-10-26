@@ -51,7 +51,8 @@ def process_sequence_concatenation(
     """
 
     # Process the audio
-    inputs = processor(audio, sampling_rate=sampling_rate, return_tensors="pt")  # type: ignore # noqa
+    inputs = processor(
+        audio, sampling_rate=sampling_rate, return_tensors="pt")  # type: ignore # noqa
 
     # Get the last hidden states
     model.eval()
@@ -61,13 +62,11 @@ def process_sequence_concatenation(
 
     # Calculate the frame indices, as well as their previous and next frames
     n_samples = last_hidden_states.shape[0]
-    padded_hidden_states = torch.cat(
-        [
-            last_hidden_states[0].unsqueeze(0),
-            last_hidden_states,
-            last_hidden_states[-1].unsqueeze(0),
-        ]
-    )
+    padded_hidden_states = torch.cat([
+        last_hidden_states[0].unsqueeze(0),
+        last_hidden_states,
+        last_hidden_states[-1].unsqueeze(0),
+    ])
     frame_indices = torch.linspace(0, n_samples - 1, n_frames)
     closest_frame = frame_indices.long() + 1
     indices = closest_frame.unsqueeze(0) + torch.arange(-1, 2).unsqueeze(1)
@@ -113,16 +112,15 @@ def process_sequence_interpolation(
     """
 
     # Process the audio
-    inputs = processor(audio, sampling_rate=sampling_rate, return_tensors="pt")  # type: ignore # noqa
+    inputs = processor(
+        audio, sampling_rate=sampling_rate, return_tensors="pt")  # type: ignore # noqa
     inputs = inputs.to(device)
 
     # Get the last hidden states
     model.eval()
     with torch.no_grad():
         outputs = model(**inputs)
-    hidden_states = outputs.last_hidden_state.squeeze(
-        0
-    )  # has shape (audio_steps, 1024)
+    hidden_states = outputs.last_hidden_state.squeeze(0)  # has shape (audio_steps, 1024)
 
     # Calculate the ratio between hidden states and frames
     hidden_state_count = hidden_states.shape[0]
@@ -143,8 +141,7 @@ def process_sequence_interpolation(
         upper_state = hidden_states[upper_idx]
 
         interpolated_state = (
-            1 - interpolation_factor
-        ) * lower_state + interpolation_factor * upper_state
+            1-interpolation_factor) * lower_state + interpolation_factor*upper_state
         interpolated_states[i] = interpolated_state
 
     return interpolated_states
@@ -172,17 +169,10 @@ def save_audio_features(
 
     # Process the audio features
     for sequence_name in tqdm(sequence_names):
-        audio_path = (
-            (
-                f"{data_directory}/sequences/{sequence_name}/audio/"
-                "audio_recording_cleaned.ogg"
-            )
-            if cleaned
-            else (
-                f"{data_directory}/sequences/{sequence_name}/audio/"
-                "audio_recording_resampled.ogg"
-            )
-        )
+        audio_path = ((f"{data_directory}/sequences/{sequence_name}/audio/"
+                       "audio_recording_cleaned.ogg") if cleaned else
+                      (f"{data_directory}/sequences/{sequence_name}/audio/"
+                       "audio_recording_resampled.ogg"))
 
         audio, sampling_rate = sf.read(audio_path)
         frame_dir = f"{data_directory}/sequences/{sequence_name}/timesteps"
@@ -210,9 +200,7 @@ def save_audio_features(
         audio_directory = os.path.dirname(audio_path)
         output_path = (
             os.path.join(audio_directory, "audio_features_cleaned.pt")
-            if cleaned
-            else os.path.join(audio_directory, "audio_features.pt")
-        )
+            if cleaned else os.path.join(audio_directory, "audio_features.pt"))
         checkpoint = {"audio_features": hidden_states.to("cpu")}
         torch.save(checkpoint, output_path)
 
