@@ -52,7 +52,7 @@ def _generate_image(
 def generate_flame_video(
     flame_params: UnbatchedFlameParams,
     output_path: str,
-    fps: int = 24,
+    fps: int = 30,
     audio_path: str | None = None,
 ) -> None:
     """ Generates a video, visualizing the flame parameters."""
@@ -84,15 +84,17 @@ def main():
     from thesis.audio_to_flame.windowed import prediction_loop
     from thesis.data_management import SequenceManager
 
+    ckpt_path = 'tb_logs/audio2flame/my_model/version_6/checkpoints/epoch=29-step=10650.ckpt'
+    # audio_path = 'tmp/audio_recording_cleaned_s3.ogg'
+    audio_path = 'tmp/test.m4a'
+    fps = 30
+
     if True:
-        ckpt_path = 'tb_logs/audio2flame/my_model/version_0/checkpoints/epoch=24-step=9375.ckpt'
-        audio_path = 'tmp/audio_recording_cleaned_s3.ogg'
-        params = prediction_loop(ckpt_path, audio_path)
-        generate_flame_video(params, 'tmp/flame_video.mp4', 24, audio_path)
+        params = prediction_loop(ckpt_path, audio_path, fps=fps)
+        generate_flame_video(params, 'tmp/flame_video.mp4', fps, audio_path)
     else:
         # s100
-        audio_path = 'tmp/audio_recording_cleaned.ogg'
-        sm = SequenceManager(sequence=100)
+        sm = SequenceManager(sequence=3)
         expr = sm.flame_params[:].expr.cuda()
         jaw = sm.flame_params[:].jaw.cuda()
         time = expr.shape[0]
@@ -104,7 +106,7 @@ def main():
             eye=torch.zeros((time, 6), device='cuda'),
             scale=torch.ones((time, 1), device='cuda'),
         )
-        generate_flame_video(params, 'tmp/flame_video_gt.mp4', 30, audio_path)
+        generate_flame_video(params, 'tmp/flame_video_gt.mp4', fps, audio_path)
 
 
 if __name__ == '__main__':

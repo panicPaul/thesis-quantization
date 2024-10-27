@@ -36,11 +36,13 @@ class AudioToFlame(pl.LightningModule):
         window_size: int = 9,
         hidden_dim: int = 128,
         num_layers: int = 4,
+        dropout: float = 0.0,
         lr: float = 3e-4,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
         self.lr = lr
+        self.dropout = dropout
         self.initial_projection = nn.Conv1d(1024, initial_projection, 1)
 
         self.window_size = window_size
@@ -63,8 +65,12 @@ class AudioToFlame(pl.LightningModule):
         x = nn.functional.silu(x)
         x = rearrange(x, 'batch d window -> batch (d window)')
         for layer in self.hidden_layers:
+            x = nn.functional.dropout(x, p=self.dropout, training=self.training)
             x = nn.functional.silu(layer(x))
-        x = nn.functional.sigmoid(self.output_layer(x))
+        # x = nn.functional.sigmoid(self.output_layer(x))
+        # maybe it's nn.tanh??
+
+        x = self.output_layer(x)
         return x[:, :100], x[:, 100:]
 
     def to_flame(
@@ -90,18 +96,19 @@ class AudioToFlame(pl.LightningModule):
         pred_expr, pred_jaw = self.forward(audio_features)
         pred_flame_vertices = self.to_flame(pred_expr, pred_jaw)
         batch_size = audio_features.shape[0]
-        target_params = UnbatchedFlameParams(
-            shape=torch.zeros(batch_size, 300, device=self.device),
-            expr=flame_params.expr[:, self.window_size // 2],
-            neck=torch.zeros(batch_size, 3, device=self.device),
-            jaw=flame_params.jaw[:, self.window_size // 2],
-            eye=torch.zeros(batch_size, 6, device=self.device),
-            scale=torch.ones(batch_size, 1, device=self.device),
-        )
-        target_vertices = self.flame_head.forward(target_params)
-        loss = nn.functional.mse_loss(pred_flame_vertices, target_vertices)
-        expr_loss = nn.functional.mse_loss(pred_expr, flame_params.expr[:, self.window_size // 2])
-        jaw_loss = nn.functional.mse_loss(pred_jaw, flame_params.jaw[:, self.window_size // 2])
+        with torch.no_grad():
+            target_params = UnbatchedFlameParams(
+                shape=torch.zeros(batch_size, 300, device=self.device),
+                expr=flame_params.expr[:, self.window_size // 2],
+                neck=torch.zeros(batch_size, 3, device=self.device),
+                jaw=flame_params.jaw[:, self.window_size // 2],
+                eye=torch.zeros(batch_size, 6, device=self.device),
+                scale=torch.ones(batch_size, 1, device=self.device),
+            )
+            target_vertices = self.flame_head.forward(target_params)
+        loss = nn.functional.l1_loss(pred_flame_vertices, target_vertices)
+        expr_loss = nn.functional.l1_loss(pred_expr, flame_params.expr[:, self.window_size // 2])
+        jaw_loss = nn.functional.l1_loss(pred_jaw, flame_params.jaw[:, self.window_size // 2])
         return {'loss': loss, 'expr_loss': expr_loss, 'jaw_loss': jaw_loss}
 
     def training_step(self, batch, batch_idx: int) -> dict[str, Float[torch.Tensor, '']]:
@@ -129,6 +136,7 @@ class AudioToFlame(pl.LightningModule):
 def prediction_loop(model_path: str,
                     input_path: str,
                     batch_size: int = 64,
+                    fps: int = 30,
                     device: torch.device | str = 'cuda') -> UnbatchedFlameParams:
     """
     Takes an audio file and returns the flame parameters for the sequence.
@@ -167,7 +175,7 @@ def prediction_loop(model_path: str,
     audio = librosa.resample(audio, orig_sr=sr, target_sr=16_000)
     sr = 16_000
     audio_length = len(audio) / sr  # in seconds
-    n_frames = int(audio_length * 24)
+    n_frames = int(audio_length * fps)
     audio_features = process_sequence_interpolation(
         audio=audio,
         sampling_rate=sr,
@@ -209,15 +217,16 @@ def prediction_loop(model_path: str,
     pad_right = window_size - 1 - pad_left
 
     # Apply reflection padding to both tensors
+    reflection_mode = 'constant'
     padded_expressions = torch.nn.functional.pad(
         all_expressions.unsqueeze(0).unsqueeze(0),  # Add batch and channel dims
         pad=(0, 0, pad_left, pad_right),  # (left, right, top, bottom)
-        mode='reflect')[0, 0]  # Remove batch and channel dims
+        mode=reflection_mode)[0, 0]  # Remove batch and channel dims
 
     padded_jaw_codes = torch.nn.functional.pad(
         all_jaw_codes.unsqueeze(0).unsqueeze(0),  # Add batch and channel dims
         pad=(0, 0, pad_left, pad_right),  # (left, right, top, bottom)
-        mode='reflect')[0, 0]  # Remove batch and channel dims
+        mode=reflection_mode)[0, 0]  # Remove batch and channel dims
 
     assert padded_expressions.shape[
         0] == n_frames, f"Expected {n_frames} frames, got {padded_expressions.shape[0]}"

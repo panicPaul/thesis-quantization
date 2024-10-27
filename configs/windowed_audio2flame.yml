@@ -1,9 +1,10 @@
 
 model:
   initial_projection: 128
-  window_size: 9
-  hidden_dim: 128
+  window_size: 17
+  hidden_dim: 32
   num_layers: 4
+  dropout: 0.5
 
 training:
   batch_size: 32
