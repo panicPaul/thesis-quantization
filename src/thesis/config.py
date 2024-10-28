@@ -53,11 +53,27 @@ class GaussianSplattingSettings:
     local_rigidity_loss: float | None = MISSING
     background_loss: float | None = MISSING
     dist_loss: float | None = MISSING
+    # region specific l1 losses
+    face_nose_l1_loss: float | None = None
+    hair_l1_loss: float | None = None
+    neck_l1_loss: float | None = None
+    ears_l1_loss: float | None = None
+    lips_l1_loss: float | None = None
+    eyes_l1_loss: float | None = None
+    inner_mouth_l1_loss: float | None = None
+    eyebrows_l1_loss: float | None = None
+    # region specific ssim losses
+    hair_ssim_loss: float | None = None
+    lips_ssim_loss: float | None = None
+    eyes_ssim_loss: float | None = None
+    inner_mouth_ssim_loss: float | None = None
+    eyebrows_ssim_loss: float | None = None
 
     # loss kwargs
     lpips_network: str = 'vgg'
     anisotropy_max_ratio: float = 10.0
     max_scale: float = 0.05  # 5 percent of the scene scale
+    jumper_is_background: bool = True
 
     # train settings
     feature_dim: int = 32

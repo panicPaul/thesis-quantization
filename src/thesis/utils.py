@@ -2,9 +2,32 @@
 
 import torch
 from beartype import BeartypeConf, BeartypeStrategy, beartype
-from jaxtyping import Float
+from jaxtyping import Float, Int
+
+from thesis.constants import SEGMENTATION_CLASSES
 
 nobeartype = beartype(conf=BeartypeConf(strategy=BeartypeStrategy.O0))
+
+
+def assign_segmentation_class(
+        segmentation_mask: Float[torch.Tensor, "c h w 3"]) -> Int[torch.Tensor, "c h w"]:
+    """Assign the colored pixel to it's corresponding class."""
+    color_classes = torch.stack([
+        torch.tensor(k, dtype=torch.float32, device=segmentation_mask.device) / 255
+        for k in SEGMENTATION_CLASSES.keys()
+    ])
+    color_values = torch.tensor(
+        list(SEGMENTATION_CLASSES.values()), dtype=torch.int64, device=segmentation_mask.device)
+
+    def _assign_pixel(pixel: Float[torch.Tensor, "3"],
+                      colors: Float[torch.Tensor, "c 3"]) -> Int[torch.Tensor, ""]:
+        key_idx = torch.argmin(torch.linalg.norm(colors - pixel, dim=-1))
+        return key_idx
+
+    keys = torch.vmap(
+        torch.vmap(torch.vmap(_assign_pixel, in_dims=(0, None)), in_dims=(0, None)),
+        in_dims=(0, None))(segmentation_mask, color_classes)
+    return color_values[keys]
 
 
 def rotation_matrix_to_quaternion(

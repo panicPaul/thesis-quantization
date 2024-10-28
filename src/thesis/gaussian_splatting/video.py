@@ -1,0 +1,1 @@
+""" Gaussian splatting video generation. """

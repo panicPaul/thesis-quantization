@@ -45,6 +45,16 @@ gaussian_splatting_settings:
   background_loss: 0.1
   dist_loss: 10.0
   # dist_loss: null
+  # region specific losses
+  hair_l1_loss: 0.0
+  hair_ssim_loss: 0.1 # effectively doubles the ssim loss in hair regions
+  eyebrows_l1_loss: 0.0
+  eyebrows_ssim_loss: 0.1
+  lips_l1_loss: 0.0
+  lips_ssim_loss: 0.1
+  neck_l1_loss: 0.0
+  inner_mouth_l1_loss: 0.0
+  inner_mouth_ssim_loss: 0.1
 
   # kwargs
   lpips_network: 'alex'

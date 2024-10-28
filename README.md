@@ -20,8 +20,6 @@ s03, t94 has eyes half closed
 - [ ] use image masks to create torso/ neck code
 - [ ] use color masks for lip loss
 - [ ] use per gaussian classification
-- [ ] always return depth
-- [ ] depth visualization option
 
 
 management

@@ -50,3 +50,40 @@ DEFAULT_SE3_TRANSLATION = torch.tensor([0.04575331, 0.06610457, -0.05820158], dt
 """ Default SE3 translation. """
 CANONICAL_PCD = '/home/schlack/master-thesis/data/Paul-audio-85/085/sequences/SEN-05-glow_eyes_sweet_girl/timesteps/frame_00072/colmap/pointclouds/pointcloud_16.pcd'  # noqa
 """ Canonical point cloud. """
+
+SEGMENTATION_CLASSES = {
+    (0, 0, 0): 0,
+    (207, 2, 252): 0,
+    (0, 255, 0): 1,
+    (1, 171, 236): 2,
+    (255, 127, 0): 3,
+    (8, 208, 126): 4,
+    (83, 130, 55): 5,
+    (8, 4, 195): 6,
+    (236, 186, 110): 7,
+    (141, 223, 0): 8,
+    (127, 255, 255): 9,
+    (255, 255, 0): 10,
+    (178, 139, 210): 11,
+    (167, 5, 72): 12,
+    (127, 255, 127): 13,
+    (73, 91, 168): 14,
+}
+"""
+Categories:
+    - 0: background
+    - 1: neck
+    - 2: jumper
+    - 3: face
+    - 4: hair
+    - 5: left ear
+    - 6: right ear
+    - 7: upper lip
+    - 8: lower lip
+    - 9: nose
+    - 10: left eye
+    - 11: right eye
+    - 12: left eyebrow
+    - 13: right eyebrow
+    - 14: inner mouth
+"""

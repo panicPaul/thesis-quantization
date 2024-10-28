@@ -41,7 +41,11 @@ from thesis.gaussian_splatting.initialize_splats import (
     random_initialization,
 )
 from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
-from thesis.utils import apply_se3_to_orientation, apply_se3_to_point
+from thesis.utils import (
+    apply_se3_to_orientation,
+    apply_se3_to_point,
+    assign_segmentation_class,
+)
 
 
 class GaussianSplattingSingleFrame(pl.LightningModule):
@@ -523,12 +527,17 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         rendered_alphas: Float[torch.Tensor, "cam H W 1"],
         target_images: Float[torch.Tensor, "cam H W 3"],
         target_alphas: Float[torch.Tensor, "cam H W"],
+        target_segmentation_mask: Float[torch.Tensor, "cam H W 3"],
         infos: dict,
     ) -> dict[str, Float[torch.Tensor, '']]:
         """ Computes the loss. """
         # set up
         loss_dict = {}
         loss = 0.0
+        segmentation_classes = assign_segmentation_class(target_segmentation_mask)
+        if self.gaussian_splatting_settings.jumper_is_background:
+            jumper_mask = torch.where(segmentation_classes == 2, 1, 0)
+            target_alphas = target_alphas * (1-jumper_mask)
         alpha_map = repeat(target_alphas, "cam H W -> cam H W f", f=3)
         background = infos['background']
         background = repeat(
@@ -607,13 +616,138 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             max_scale_loss = f()
             loss_dict["max_scale_loss"] = max_scale_loss
             loss = loss + max_scale_loss * self.gaussian_splatting_settings.max_scale_loss
-
         # distloss
         if (self.gaussian_splatting_settings.dist_loss is not None and
                 self.gaussian_splatting_settings.rasterization_mode == '2dgs'):
             distloss = infos['render_distort'].mean()
             loss_dict["render_distort"] = distloss
             loss = loss + distloss * self.gaussian_splatting_settings.dist_loss
+        # face nose l1
+        if self.gaussian_splatting_settings.face_nose_l1_loss is not None:
+            face_mask = torch.where(segmentation_classes == 3, 1, 0)
+            nose_mask = torch.where(segmentation_classes == 9, 1, 0)
+            face_nose_mask = torch.logical_or(face_mask, nose_mask)
+            face_nose_mask = repeat(face_nose_mask, "cam H W -> cam H W f", f=3)
+            face_nose_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * face_nose_mask, dim=-1).mean()
+            loss_dict["face_nose_l1"] = face_nose_loss
+            loss = loss + face_nose_loss * self.gaussian_splatting_settings.face_nose_l1_loss
+        # hair l1
+        if self.gaussian_splatting_settings.hair_l1_loss is not None:
+            hair_mask = torch.where(segmentation_classes == 4, 1, 0)
+            hair_mask = repeat(hair_mask, "cam H W -> cam H W f", f=3)
+            hair_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * hair_mask, dim=-1).mean()
+            loss_dict["hair_l1"] = hair_loss
+            loss = loss + hair_loss * self.gaussian_splatting_settings.hair_l1_loss
+        # neck l1
+        if self.gaussian_splatting_settings.neck_l1_loss is not None:
+            neck_mask = torch.where(segmentation_classes == 1, 1, 0)
+            neck_mask = repeat(neck_mask, "cam H W -> cam H W f", f=3)
+            neck_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * neck_mask, dim=-1).mean()
+            loss_dict["neck_l1"] = neck_loss
+            loss = loss + neck_loss * self.gaussian_splatting_settings.neck_l1_loss
+        # ears l1
+        if self.gaussian_splatting_settings.ears_l1_loss is not None:
+            left_ear_mask = torch.where(segmentation_classes == 5, 1, 0)
+            right_ear_mask = torch.where(segmentation_classes == 6, 1, 0)
+            ears_mask = torch.logical_or(left_ear_mask, right_ear_mask)
+            ears_mask = repeat(ears_mask, "cam H W -> cam H W f", f=3)
+            ears_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * ears_mask, dim=-1).mean()
+            loss_dict["ears_l1"] = ears_loss
+            loss = loss + ears_loss * self.gaussian_splatting_settings.ears_l1_loss
+        # lips l1
+        if self.gaussian_splatting_settings.lips_l1_loss is not None:
+            upper_lip_nask = torch.where(segmentation_classes == 7, 1, 0)
+            lower_lip_mask = torch.where(segmentation_classes == 8, 1, 0)
+            lips_mask = torch.logical_or(upper_lip_nask, lower_lip_mask)
+            lips_mask = repeat(lips_mask, "cam H W -> cam H W f", f=3)
+            lips_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * lips_mask, dim=-1).mean()
+            loss_dict["lips_l1"] = lips_loss
+            loss = loss + lips_loss * self.gaussian_splatting_settings.lips_l1_loss
+        # eyes l1
+        if self.gaussian_splatting_settings.eyes_l1_loss is not None:
+            left_eye_mask = torch.where(segmentation_classes == 10, 1, 0)
+            right_eye_mask = torch.where(segmentation_classes == 11, 1, 0)
+            eyes_mask = torch.logical_or(left_eye_mask, right_eye_mask)
+            eyes_mask = repeat(eyes_mask, "cam H W -> cam H W f", f=3)
+            eyes_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * eyes_mask, dim=-1).mean()
+            loss_dict["eyes_l1"] = eyes_loss
+            loss = loss + eyes_loss * self.gaussian_splatting_settings.eyes_l1_loss
+        # inner mouth l1
+        if self.gaussian_splatting_settings.inner_mouth_l1_loss is not None:
+            inner_mouth_mask = torch.where(segmentation_classes == 14, 1, 0)
+            inner_mouth_mask = repeat(inner_mouth_mask, "cam H W -> cam H W f", f=3)
+            inner_mouth_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * inner_mouth_mask, dim=-1).mean()
+            loss_dict["inner_mouth_l1"] = inner_mouth_loss
+            loss = loss + inner_mouth_loss * self.gaussian_splatting_settings.inner_mouth_l1_loss
+        # eyebrows l1
+        if self.gaussian_splatting_settings.eyebrows_l1_loss is not None:
+            left_eyebrow_mask = torch.where(segmentation_classes == 12, 1, 0)
+            right_eyebrow_mask = torch.where(segmentation_classes == 13, 1, 0)
+            eyebrows_mask = torch.logical_or(left_eyebrow_mask, right_eyebrow_mask)
+            eyebrows_mask = repeat(eyebrows_mask, "cam H W -> cam H W f", f=3)
+            eyebrows_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images) * eyebrows_mask, dim=-1).mean()
+            loss_dict["eyebrows_l1"] = eyebrows_loss
+            loss = loss + eyebrows_loss * self.gaussian_splatting_settings.eyebrows_l1_loss
+        # hair ssim
+        if self.gaussian_splatting_settings.hair_ssim_loss is not None:
+            hair_mask = torch.where(segmentation_classes == 4, 1, 0)
+            hair_mask = repeat(hair_mask, "cam H W -> cam H W f", f=3)
+            pred = rearrange(raw_rendered_images * hair_mask, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images * hair_mask, "cam H W f -> cam f H W")
+            hair_ssim_loss = 1 - self.ssim(pred, tgt).mean()
+            loss_dict["hair_ssim"] = hair_ssim_loss
+            loss = loss + hair_ssim_loss * self.gaussian_splatting_settings.hair_ssim_loss
+        # lips ssim
+        if self.gaussian_splatting_settings.lips_ssim_loss is not None:
+            upper_lip_nask = torch.where(segmentation_classes == 7, 1, 0)
+            lower_lip_mask = torch.where(segmentation_classes == 8, 1, 0)
+            lips_mask = torch.logical_or(upper_lip_nask, lower_lip_mask)
+            lips_mask = repeat(lips_mask, "cam H W -> cam H W f", f=3)
+            pred = rearrange(raw_rendered_images * lips_mask, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images * lips_mask, "cam H W f -> cam f H W")
+            lips_ssim_loss = 1 - self.ssim(pred, tgt).mean()
+            loss_dict["lips_ssim"] = lips_ssim_loss
+            loss = loss + lips_ssim_loss * self.gaussian_splatting_settings.lips_ssim_loss
+        # eyes ssim
+        if self.gaussian_splatting_settings.eyes_ssim_loss is not None:
+            left_eye_mask = torch.where(segmentation_classes == 10, 1, 0)
+            right_eye_mask = torch.where(segmentation_classes == 11, 1, 0)
+            eyes_mask = torch.logical_or(left_eye_mask, right_eye_mask)
+            eyes_mask = repeat(eyes_mask, "cam H W -> cam H W f", f=3)
+            pred = rearrange(raw_rendered_images * eyes_mask, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images * eyes_mask, "cam H W f -> cam f H W")
+            eyes_ssim_loss = 1 - self.ssim(pred, tgt).mean()
+            loss_dict["eyes_ssim"] = eyes_ssim_loss
+            loss = loss + eyes_ssim_loss * self.gaussian_splatting_settings.eyes_ssim_loss
+        # inner mouth ssim
+        if self.gaussian_splatting_settings.inner_mouth_ssim_loss is not None:
+            inner_mouth_mask = torch.where(segmentation_classes == 14, 1, 0)
+            inner_mouth_mask = repeat(inner_mouth_mask, "cam H W -> cam H W f", f=3)
+            pred = rearrange(raw_rendered_images * inner_mouth_mask, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images * inner_mouth_mask, "cam H W f -> cam f H W")
+            inner_mouth_ssim_loss = 1 - self.ssim(pred, tgt).mean()
+            loss_dict["inner_mouth_ssim"] = inner_mouth_ssim_loss
+            loss = loss + (
+                inner_mouth_ssim_loss * self.gaussian_splatting_settings.inner_mouth_ssim_loss)
+        # eyebrows ssim
+        if self.gaussian_splatting_settings.eyebrows_ssim_loss is not None:
+            left_eyebrow_mask = torch.where(segmentation_classes == 12, 1, 0)
+            right_eyebrow_mask = torch.where(segmentation_classes == 13, 1, 0)
+            eyebrows_mask = torch.logical_or(left_eyebrow_mask, right_eyebrow_mask)
+            eyebrows_mask = repeat(eyebrows_mask * eyebrows_mask, "cam H W -> cam H W f", f=3)
+            pred = rearrange(raw_rendered_images * eyebrows_mask, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images, "cam H W f -> cam f H W")
+            eyebrows_ssim_loss = 1 - self.ssim(pred, tgt).mean()
+            loss_dict["eyebrows_ssim"] = eyebrows_ssim_loss
+            loss = loss + eyebrows_ssim_loss * self.gaussian_splatting_settings.eyebrows_ssim_loss
 
         loss_dict["loss"] = loss
         return loss_dict
@@ -662,6 +796,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             rendered_alphas=rendered_alphas,
             target_images=batch.image,
             target_alphas=batch.alpha_map,
+            target_segmentation_mask=batch.segmentation_mask,
             infos=infos,
         )
         loss = loss_dict["loss"]
@@ -767,6 +902,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             rendered_alphas=rendered_alphas,
             target_images=batch.image,
             target_alphas=batch.alpha_map,
+            target_segmentation_mask=batch.segmentation_mask,
             infos=infos,
         )
         loss = loss_dict["loss"]
