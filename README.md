@@ -15,15 +15,13 @@ color correction is fucking things up for some reason. (maybe inverted?)
 s03, t94 has eyes half closed
 # To Do's:
 
-- [ ] depth view toggle in viewer
-- [ ] sh coloring
+- [ ] depth view toggle in viewer !!!
 
 - [ ] use image masks to create torso/ neck code
 - [ ] use color masks for lip loss
 - [ ] use per gaussian classification
 - [ ] always return depth
 - [ ] depth visualization option
-- [ ] add validation cameras
 
 
 management

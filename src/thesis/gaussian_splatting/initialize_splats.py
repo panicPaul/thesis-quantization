@@ -194,3 +194,22 @@ def flame_initialization(
         splats['colors'] = nn.functional.sigmoid(nn.Parameter(torch.randn((num_splats, 3))))
 
     return splats
+
+
+def pre_trained_initialization(checkpoint: str) -> GaussianSplats:
+    """
+    Initialize splats from a pre-trained model.
+
+    Args:
+        checkpoint (str): Checkpoint path.
+
+    Returns:
+        GaussianSplats: Pre-trained splats.
+    """
+    checkpoint = torch.load(checkpoint, map_location='cpu', weights_only=False)
+    splats = {}
+    for key, value in checkpoint['state_dict'].items():
+        if 'splat' in key:
+            k = key.split('.')[1]
+            splats[k] = nn.Parameter(value)
+    return GaussianSplats(**splats)

@@ -36,6 +36,7 @@ from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorr
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
     point_cloud_initialization,
+    pre_trained_initialization,
     random_initialization,
 )
 from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
@@ -52,9 +53,24 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         gaussian_splatting_settings: GaussianSplattingSettings | DictConfig,
         learning_rates: DictConfig,
         enable_viewer: bool = True,
+        ckpt_path: str | None = None,
     ) -> None:
-        """Initializes the Gaussian splatting model."""
+        """
+        Initializes the Gaussian splatting model.
+
+        Args:
+            sequence (int): Sequence number.
+            frame (int): Frame number.
+            gaussian_splatting_settings (GaussianSplattingSettings | DictConfig): Gaussian
+                splatting settings.
+            learning_rates (DictConfig): Learning rates.
+            enable_viewer (bool): Whether to enable the viewer.
+            checkpoint_path (str | None): Path to the checkpoint. Needs to be provided if
+                loading a pre-trained model, since torch will throw size mismatch errors
+                otherwise.
+        """
         super().__init__()
+        self.frame = frame
         self.save_hyperparameters()
         self.automatic_optimization = False
 
@@ -74,7 +90,10 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         self.enable_viewer = enable_viewer
 
         # Initialize splats
-        match gaussian_splatting_settings.initialization_mode:
+        initialization_mode = gaussian_splatting_settings.initialization_mode
+        if ckpt_path is not None:
+            initialization_mode = "pre_trained"
+        match initialization_mode:
             case "random":
                 self.splats = nn.ParameterDict(
                     random_initialization(
@@ -108,6 +127,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                         initialize_spherical_harmonics=not gaussian_splatting_settings
                         .use_view_dependent_color_mlp,
                     ))
+            case "pre_trained":
+                self.splats = nn.ParameterDict(pre_trained_initialization(ckpt_path))
             case _:
                 raise ValueError("Unknown initialization mode: "
                                  f"{gaussian_splatting_settings.initialization_mode}")
@@ -864,15 +885,17 @@ if __name__ == "__main__":
         type=str,
         default="configs/single_frame.yml",
         help="Path to the configuration file.")
-    parser.add_argument("-v", "--viewer", action="store_true", help="Start the viewer.")
+    parser.add_argument(
+        "-v", "--visualize", type=str, help="Path to checkpoint file to visualize.")
     args = parser.parse_args()
-    if args.viewer:
-        config = load_config(args.config)
-        model = GaussianSplattingSingleFrame(
-            config.gaussian_splatting_settings, config.learning_rates, enable_viewer=True)
+    if args.visualize:
+        model = GaussianSplattingSingleFrame.load_from_checkpoint(
+            args.visualize, ckpt_path=args.visualize)
         model.cuda()
         print("Starting viewer...")
-        model.viewer()
+        model.start_viewer(mode='rendering')
+        print("To exit, press Ctrl+C.")
+        time.sleep(100000)
 
     else:
         train(args.config)

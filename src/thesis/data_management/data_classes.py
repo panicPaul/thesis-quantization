@@ -58,6 +58,8 @@ class GaussianSplats(TypedDict):
     opacities: Float[nn.Parameter, "n_splats"]
     colors: Float[nn.Parameter, "n_splats 3"]
     features: Float[nn.Parameter, "n_splats feature_dim"]
+    sh0: Float[nn.Parameter, "n_splats 1 3"]
+    shN: Float[nn.Parameter, "n_splats shs 3"]
 
 
 # ==================================================================================== #

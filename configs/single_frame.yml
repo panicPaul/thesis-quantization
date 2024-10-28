@@ -26,7 +26,7 @@ gaussian_splatting_settings:
   densification_mode: monte_carlo_markov_chain
   # densification_mode: default
   refine_start_iteration: 500
-  refine_stop_iteration: 25_000
+  refine_stop_iteration: 90_000
   cap_max: 100_000
 
   # initialization settings
@@ -41,7 +41,7 @@ gaussian_splatting_settings:
   ssim_denoised_image_loss: null
   lpips_image_loss: 0.05
   anisotropy_loss: 0.1
-  max_scale_loss: null
+  max_scale_loss: 10.0
   local_rigidity_loss: null
   background_loss: 0.1
   # kwargs
@@ -50,7 +50,7 @@ gaussian_splatting_settings:
   # train settings
   feature_dim: 32
   camera_batch_size: 1
-  train_iterations: 30_000
+  train_iterations: 100_000
   log_images_interval: 500
 
 # ---> Learning Rates
