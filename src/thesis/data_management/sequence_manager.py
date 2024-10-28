@@ -301,6 +301,7 @@ class SequenceManager:
         if len(cameras) == 1:
             image = image.unsqueeze(0)
             segmentation_mask = segmentation_mask.unsqueeze(0)
+            alpha_map = alpha_map.unsqueeze(0)
         intrinsics = repeat(intrinsics, "m n -> cam m n", cam=len(cameras))
 
         return SingleFrameData(

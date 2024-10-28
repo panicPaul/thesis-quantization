@@ -1,16 +1,16 @@
 # ===== Configuration for single-frame training =====
-name: debugging
+name: 2dgs
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
 
   # pre-processing settings
-  use_view_dependent_color_mlp: false
-  rasterization_mode: 3dgs
+  use_view_dependent_color_mlp: true
+  rasterization_mode: 2dgs
   dist_loss: false # 2dgs only
 
   # rasterization_settings
-  sh_degree: 0
+  sh_degree: 3
 
   # post-processing settings
   # background_r: 0.66
@@ -20,7 +20,7 @@ gaussian_splatting_settings:
   background_g: 0.0
   background_b: 0.0
   screen_space_denoising_mode: none
-  learnable_color_correction: true
+  learnable_color_correction: false
 
   # densification_settings
   densification_mode: monte_carlo_markov_chain
@@ -39,15 +39,17 @@ gaussian_splatting_settings:
   l1_image_loss: 1.0
   ssim_image_loss: 0.1
   ssim_denoised_image_loss: null
-  lpips_image_loss: null #0.05
+  lpips_image_loss: 0.05
   anisotropy_loss: 0.1
-  max_scale_loss: 10.0
+  max_scale_loss: null
   local_rigidity_loss: null
   background_loss: 0.1
+  # kwargs
+  lpips_network: 'alex'
 
   # train settings
   feature_dim: 32
-  camera_batch_size: 2
+  camera_batch_size: 1
   train_iterations: 30_000
   log_images_interval: 500
 
@@ -61,6 +63,7 @@ learning_rates:
   features_lr: 2.5e-3
   # colors
   sh0_lr: 2.5e-3 # shN is 1/20 of sh0
+  color_lr: 2.5e-3
 
   # Color MLP
   color_mlp_lr: 1e-3
@@ -74,5 +77,6 @@ viewer_port: 8080
 sequence: 3
 frame: 42
 num_train_workers: 12
+num_val_workers: 4
 tensorboard_dir: logs
 enable_viewer: true

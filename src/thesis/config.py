@@ -57,7 +57,7 @@ class GaussianSplattingSettings:
     # loss kwargs
     lpips_network: str = 'vgg'
     anisotropy_max_ratio: float = 10.0
-    max_scale: float = 0.05 * 0.2  # penalize when the scale is larger than this
+    max_scale: float = 0.05  # 5 percent of the scene scale
 
     # train settings
     feature_dim: int = 32

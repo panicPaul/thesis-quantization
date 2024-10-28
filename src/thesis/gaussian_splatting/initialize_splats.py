@@ -23,7 +23,7 @@ def random_initialization(
     initial_opacity: float = 0.1,
     feature_dim: int | None = None,
     colors_sh_degree: int = 3,
-    initialize_colors: bool = False,
+    initialize_spherical_harmonics: bool = False,
 ) -> GaussianSplats:
     """
     Randomly initialize splats.
@@ -33,9 +33,8 @@ def random_initialization(
         scene_scale (float): Scene scale.
         initial_opacity (float): Initial opacity.
         feature_dim (int | None): Feature dimension.
-        initialize_colors (bool): Whether to initialize colors. Not necessary when
-            using the view-dependent color module.
-
+        initialize_spherical_harmonics (bool): Whether to initialize spherical
+            harmonics.
 
     Returns:
         GaussianSplats: Randomly initialized splats.
@@ -62,13 +61,16 @@ def random_initialization(
 
     if feature_dim is not None:
         splats["features"] = nn.Parameter(torch.randn((num_splats, feature_dim)))
-    if initialize_colors:
+    if initialize_spherical_harmonics:
         spherical_harmonics = torch.zeros((num_splats, (colors_sh_degree + 1)**2, 3))
         colors = torch.randn((num_splats, 3))
         sh0 = rgb_to_sh(colors)
         spherical_harmonics[:, 0, :] = sh0
         splats["sh0"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, :1, :]))
         splats["shN"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, 1:, :]))
+    else:
+        splats['colors'] = nn.functional.sigmoid(nn.Parameter(torch.randn((num_splats, 3))))
+
     return splats
 
 
@@ -78,7 +80,7 @@ def point_cloud_initialization(
     initial_opacity: float = 0.1,
     feature_dim: int | None = None,
     colors_sh_degree: int = 3,
-    initialize_colors: bool = False,
+    initialize_spherical_harmonics: bool = False,
 ) -> GaussianSplats:
     """
     Initialize splats based on a point cloud.
@@ -88,8 +90,8 @@ def point_cloud_initialization(
         scene_scale (float): Scene scale.
         initial_opacity (float): Initial opacity.
         feature_dim (int | None): Feature dimension.
-        initialize_colors (bool): Whether to initialize colors. Not necessary when
-            using the view-dependent color module.
+        initialize_spherical_harmonics (bool): Whether to initialize spherical
+            harmonics.
     """
     means, colors = load_point_cloud()
     random_indices = torch.randint(0, len(means), (num_splats,))
@@ -116,12 +118,14 @@ def point_cloud_initialization(
 
     if feature_dim is not None:
         splats["features"] = nn.Parameter(torch.randn((num_splats, feature_dim)))
-    if initialize_colors:
+    if spherical_harmonics:
         spherical_harmonics = torch.zeros((num_splats, (colors_sh_degree + 1)**2, 3))
         sh0 = rgb_to_sh(colors)
         spherical_harmonics[:, 0, :] = sh0
         splats["sh0"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, :1, :]))
         splats["shN"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, 1:, :]))
+    else:
+        splats['colors'] = nn.functional.sigmoid(nn.Parameter(colors[random_indices]))
 
     return splats
 
@@ -132,7 +136,7 @@ def flame_initialization(
     initial_opacity: float = 0.1,
     feature_dim: int | None = None,
     colors_sh_degree: int = 3,
-    initialize_colors: bool = False,
+    initialize_spherical_harmonics: bool = False,
 ) -> GaussianSplats:
     """
     Initialize splats based on flame parameters
@@ -142,8 +146,10 @@ def flame_initialization(
         scene_scale (float): Scene scale.
         initial_opacity (float): Initial opacity.
         feature_dim (int | None): Feature dimension.
-        initialize_colors (bool): Whether to initialize colors. Not necessary when
-            using the view-dependent color module.
+        colors_sh_degree (int): Degree of the spherical harmonics basis.
+        initialize_spherical_harmonics (bool): Whether to initialize spherical
+            harmonics.
+
 
     Returns:
         GaussianSplats: Flame parameters initialized splats.
@@ -177,12 +183,14 @@ def flame_initialization(
 
     if feature_dim is not None:
         splats["features"] = nn.Parameter(torch.randn((num_splats, feature_dim)))
-    if initialize_colors:
+    if initialize_spherical_harmonics:
         spherical_harmonics = torch.zeros((num_splats, (colors_sh_degree + 1)**2, 3))
         colors = torch.randn((num_splats, 3))
         sh0 = rgb_to_sh(colors)
         spherical_harmonics[:, 0, :] = sh0
         splats["sh0"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, :1, :]))
         splats["shN"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, 1:, :]))
+    else:
+        splats['colors'] = nn.functional.sigmoid(nn.Parameter(torch.randn((num_splats, 3))))
 
     return splats

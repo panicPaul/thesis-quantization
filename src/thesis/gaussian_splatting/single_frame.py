@@ -18,13 +18,18 @@ from jaxtyping import Float, Int
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig
 from torch import nn
-from torch.optim import Adam
+from torch.optim import Adam, AdamW
 from torch.utils.data import DataLoader
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from thesis.config import GaussianSplattingSettings, load_config
-from thesis.constants import DEFAULT_SE3_ROTATION, DEFAULT_SE3_TRANSLATION, TRAIN_CAMS
+from thesis.constants import (
+    DEFAULT_SE3_ROTATION,
+    DEFAULT_SE3_TRANSLATION,
+    TEST_CAMS,
+    TRAIN_CAMS,
+)
 from thesis.data_management import SequenceManager, SingleSequenceDataset
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
@@ -77,7 +82,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                         scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
-                        initialize_colors=not gaussian_splatting_settings
+                        initialize_spherical_harmonics=not gaussian_splatting_settings
                         .use_view_dependent_color_mlp,
                     ))
             case "point_cloud":
@@ -87,7 +92,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                         scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
-                        initialize_colors=not gaussian_splatting_settings
+                        initialize_spherical_harmonics=not gaussian_splatting_settings
                         .use_view_dependent_color_mlp,
                     ))
             case "flame":
@@ -100,7 +105,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                         scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
-                        initialize_colors=not gaussian_splatting_settings
+                        initialize_spherical_harmonics=not gaussian_splatting_settings
                         .use_view_dependent_color_mlp,
                     ))
             case _:
@@ -138,6 +143,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             self.view_dependent_color_mlp = ViewDependentColorMLP(
                 feature_dim=gaussian_splatting_settings.feature_dim,
                 sh_degree=gaussian_splatting_settings.sh_degree,
+                num_cameras=len(TRAIN_CAMS),
             )
 
         # Get the rasterization function
@@ -175,7 +181,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.lpips = LearnedPerceptualImagePatchSimilarity(
-            net_type=gaussian_splatting_settings.lpips_network, normalize=False)
+            net_type=gaussian_splatting_settings.lpips_network, normalize=True)
 
     def configure_optimizers(self):
         """
@@ -224,14 +230,27 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 eps=1e-15 / batch_scaling,
                 betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
             )
+        else:
+            splat_optimizers['colors'] = Adam(
+                [self.splats['colors']],
+                lr=self.learning_rates.color_lr * batch_scaling,
+                eps=1e-15 / batch_scaling,
+                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
+            )
 
         # other optimizers
         other_optimizers = {}
         if hasattr(self, "view_dependent_color_mlp"):
-            other_optimizers["view_dependent_color_mlp"] = Adam(
-                self.view_dependent_color_mlp.parameters(),
+            other_optimizers["view_dependent_color_mlp_head"] = Adam(
+                self.view_dependent_color_mlp.color_head.parameters(),
                 lr=self.learning_rates.color_mlp_lr * batch_scaling,
             )
+            other_optimizers['view_dependent_color_mlp_embedding'] = AdamW(
+                self.view_dependent_color_mlp.embeds.parameters(),
+                lr=self.learning_rates.color_mlp_lr * batch_scaling * 10.0,
+                weight_decay=self.learning_rates.color_mlp_weight_decay,
+            )
+
         if hasattr(self, "learnable_color_correction"):
             other_optimizers["learnable_color_correction"] = Adam(
                 self.learnable_color_correction.parameters(),
@@ -329,7 +348,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         means = apply_se3_to_point(rotation, translation, means)
         quats = apply_se3_to_orientation(rotation, quats)
         if hasattr(self, "view_dependent_color_mlp"):
-            colors = self.view_dependent_color_mlp.forward(features, means, cam_2_world,
+            colors = self.view_dependent_color_mlp.forward(features, camera_indices, means,
+                                                           self.splats['colors'], cam_2_world,
                                                            cur_sh_degree)
         else:
             colors = colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)
@@ -361,7 +381,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
 
         # ------------------------------- Post-processing ------------------------------ #
         # Apply screen-space denoising
-        infos['rasterized_images'] = images
+        infos['raw_rendered_images'] = images
         images = self.screen_space_denoiser(images, alphas)
 
         # Apply background
@@ -451,7 +471,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
     def compute_loss(
         self,
         rendered_images: Float[torch.Tensor, "cam H W 3"],
-        rendered_alphas: Float[torch.Tensor, "cam H W"],
+        rendered_alphas: Float[torch.Tensor, "cam H W 1"],
         target_images: Float[torch.Tensor, "cam H W 3"],
         target_alphas: Float[torch.Tensor, "cam H W"],
         infos: dict,
@@ -468,66 +488,76 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             cam=alpha_map.shape[0],
             H=alpha_map.shape[1],
             W=alpha_map.shape[2])
-        rasterized_images = infos['rasterized_images']
+        raw_rendered_images = infos['raw_rendered_images']
         target_images = target_images*alpha_map + (1-alpha_map) * background
-        denoised_foreground = rendered_images*alpha_map + (
-            1-alpha_map) * background  # use the target alpha_map
-        raw_foreground = rasterized_images*alpha_map + (
-            1-alpha_map) * background  # use the target alpha_map
-        # l1 (foreground) loss for rasterized images
+
+        # raw l1 foreground loss
         if self.gaussian_splatting_settings.l1_image_loss is not None:
-            l1_loss = torch.sum(torch.abs(raw_foreground - target_images), dim=-1).mean()
-            loss_dict["l1_loss"] = l1_loss
-            loss = loss + self.gaussian_splatting_settings.l1_image_loss * l1_loss
-        # ssim loss for rasterized images
+            l1_foreground_loss = torch.sum(
+                torch.abs(raw_rendered_images - target_images), dim=-1).mean()
+            loss_dict["l1_foreground_loss"] = l1_foreground_loss
+            loss = loss + l1_foreground_loss * self.gaussian_splatting_settings.l1_image_loss
+        # raw ssim foreground loss
         if self.gaussian_splatting_settings.ssim_image_loss is not None:
-            pred = rearrange(raw_foreground, "cam H W c -> cam c H W")
-            tgt = rearrange(target_images, "cam H W c -> cam c H W")
-            ssim_loss = self.ssim(pred, tgt)
-            loss_dict["ssim_loss"] = ssim_loss
-            loss = loss + self.gaussian_splatting_settings.ssim_image_loss * ssim_loss
-        # ssim loss for denoised images
+            pred = rearrange(raw_rendered_images, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images, "cam H W f -> cam f H W")
+            ssim_foreground_loss = 1 - self.ssim(pred, tgt).mean()
+            loss_dict["ssim_foreground_loss"] = ssim_foreground_loss
+            loss = loss + ssim_foreground_loss * self.gaussian_splatting_settings.ssim_image_loss
+        # denoised ssim foreground loss
         if self.gaussian_splatting_settings.ssim_denoised_image_loss is not None:
-            pred = rearrange(denoised_foreground, "cam H W c -> cam c H W")
-            tgt = rearrange(target_images, "cam H W c -> cam c H W")
-            ssim_loss = self.ssim(pred, tgt)
-            loss_dict["ssim_denoised_loss"] = ssim_loss
-            loss = loss + self.gaussian_splatting_settings.ssim_denoised_image_loss * ssim_loss
-        # lpips for rendered images
+            pred = rearrange(rendered_images, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images, "cam H W f -> cam f H W")
+            ssim_denoised_foreground_loss = 1 - self.ssim(pred, tgt).mean()
+            loss_dict["ssim_denoised_foreground_loss"] = ssim_denoised_foreground_loss
+            loss = loss + ssim_denoised_foreground_loss \
+                * self.gaussian_splatting_settings.ssim_denoised_image_loss
+        # lpips foreground loss
         if self.gaussian_splatting_settings.lpips_image_loss is not None:
-            pred = (raw_foreground-0.5) * 2
-            tgt = (target_images-0.5) * 2
-            pred = rearrange(pred, "cam H W c -> cam c H W")
-            tgt = rearrange(tgt, "cam H W c -> cam c H W")
-            lpips_loss = self.lpips(pred, tgt)
-            loss_dict["lpips_loss"] = lpips_loss
-            loss = loss + self.gaussian_splatting_settings.lpips_image_loss * lpips_loss
-        # anisotropy loss
-        if self.gaussian_splatting_settings.anisotropy_loss is not None:
-            scales = self.splats["scales"]
-            max_ratio = self.gaussian_splatting_settings.anisotropy_max_ratio
-            log_scale_ratio = scales.max(dim=1).values - scales.min(dim=1).values
-            scale_ratio = torch.exp(log_scale_ratio)
-            anisotropy_loss = (
-                torch.where(scale_ratio > max_ratio, scale_ratio, max_ratio).mean() - max_ratio)
-            loss_dict["anisotropy_loss"] = anisotropy_loss
-            loss = loss + self.gaussian_splatting_settings.anisotropy_loss * anisotropy_loss
-        # max scale loss
-        if self.gaussian_splatting_settings.max_scale_loss is not None:
-            max_log_scales = torch.max(scales, dim=1).values
-            max_log_scales_found = torch.exp(max_log_scales)
-            max_scale_loss = torch.relu(max_log_scales_found
-                                        - self.gaussian_splatting_settings.max_scale).mean()
-            loss_dict["max_scale_loss"] = max_scale_loss
-            loss = loss + self.gaussian_splatting_settings.max_scale_loss * max_scale_loss
-        # local rigidity loss
-        if self.gaussian_splatting_settings.local_rigidity_loss is not None:
-            raise NotImplementedError('local rigidity loss is not implemented yet')
+            pred = rearrange(raw_rendered_images, "cam H W f -> cam f H W").clip(0, 1)
+            tgt = rearrange(target_images, "cam H W f -> cam f H W")
+            lpips_foreground_loss = self.lpips.forward(pred, tgt).mean()
+            loss_dict["lpips_foreground_loss"] = lpips_foreground_loss
+            loss = loss + lpips_foreground_loss * self.gaussian_splatting_settings.lpips_image_loss
         # background loss
         if self.gaussian_splatting_settings.background_loss is not None:
-            background_loss = nn.functional.l1_loss(rendered_alphas, target_alphas.unsqueeze(-1))
+            background_loss = nn.functional.mse_loss(rendered_alphas.squeeze(-1),
+                                                     target_alphas).mean()
             loss_dict["background_loss"] = background_loss
-            loss = loss + self.gaussian_splatting_settings.background_loss * background_loss
+            loss = loss + background_loss * self.gaussian_splatting_settings.background_loss
+        # aniostropy loss
+        if self.gaussian_splatting_settings.anisotropy_loss is not None:
+
+            @torch.compiler.disable
+            def f():
+                scales = self.splats['scales']
+                log_scale_ratio = log_scale_ratio = scales.max(dim=1).values - scales.min(
+                    dim=1).values
+                scale_ratio = torch.exp(log_scale_ratio)
+                max_ratio = self.gaussian_splatting_settings.anisotropy_max_ratio
+                anisotropy_loss = (
+                    torch.where(scale_ratio > max_ratio, scale_ratio, max_ratio).mean()
+                    - max_ratio)
+                return anisotropy_loss
+
+            anisotropy_loss = f()
+            loss_dict["anisotropy_loss"] = anisotropy_loss
+            loss = loss + anisotropy_loss * self.gaussian_splatting_settings.anisotropy_loss
+        # max scale loss
+        if self.gaussian_splatting_settings.max_scale_loss is not None:
+
+            @torch.compiler.disable
+            def f():
+                scales = self.splats['scales']
+                max_scale = self.gaussian_splatting_settings.max_scale
+                max_log_scales = torch.max(scales, dim=1).values
+                max_log_scales_found = torch.exp(max_log_scales)
+                max_scale_loss = torch.relu(max_log_scales_found - max_scale).mean()
+                return max_scale_loss
+
+            max_scale_loss = f()
+            loss_dict["max_scale_loss"] = max_scale_loss
+            loss = loss + max_scale_loss * self.gaussian_splatting_settings.max_scale_loss
 
         loss_dict["loss"] = loss
         return loss_dict
@@ -621,12 +651,12 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 ).detach().cpu().numpy())
             canvas = (canvas * 255).astype(np.uint8)
             writer = self.logger.experiment
-            writer.add_image("train/render", canvas, self.global_step, dataformats="HWC")
+            writer.add_image("train/denoised_render", canvas, self.global_step, dataformats="HWC")
             # raw render
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
                 canvas = (
                     torch.concatenate(
-                        [batch.image[0].clamp(0, 1), infos['rasterized_images'][0].clamp(0, 1)],
+                        [batch.image[0].clamp(0, 1), infos['raw_rendered_images'][0].clamp(0, 1)],
                         dim=1,
                     ).detach().cpu().numpy())
                 canvas = (canvas * 255).astype(np.uint8)
@@ -654,10 +684,71 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         return loss
 
     @torch.no_grad()
-    def val_step(self, batch: SingleFrameData, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: SingleFrameData, batch_idx: int) -> torch.Tensor:
         """Validation step."""
-        # Forward pass
-        pass
+        # Pause the viewer if needed
+        if self.enable_viewer:
+            while self.viewer.state.status == "paused":
+                time.sleep(0.01)
+            self.viewer.lock.acquire()
+            tic = time.time()
+
+        rendered_images, rendered_alphas, infos = self.forward(
+            intrinsics=batch.intrinsics,
+            world_2_cam=batch.world_2_cam,
+            cam_2_world=None,
+            image_height=int(batch.image.shape[1]),
+            image_width=int(batch.image.shape[2]),
+            color_correction=batch.color_correction,
+            cur_sh_degree=self.max_sh_degree,
+            se3_transform=batch.se3_transform,
+            camera_indices=batch.camera_indices,
+        )
+
+        # Loss computation and logging
+        loss_dict = self.compute_loss(
+            rendered_images=rendered_images,
+            rendered_alphas=rendered_alphas,
+            target_images=batch.image,
+            target_alphas=batch.alpha_map,
+            infos=infos,
+        )
+        loss = loss_dict["loss"]
+        for key, value in loss_dict.items():
+            self.log(f'val/{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
+
+        # Log denoised images
+        canvas = (
+            torch.concatenate(
+                [batch.image[0].clamp(0, 1), rendered_images[0].clamp(0, 1)],
+                dim=1,
+            ).detach().cpu().numpy())
+        canvas = (canvas * 255).astype(np.uint8)
+        writer = self.logger.experiment
+        writer.add_image("val/denoised_render", canvas, self.global_step, dataformats="HWC")
+        # Log raw renders
+        if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
+            canvas = (
+                torch.concatenate(
+                    [batch.image[0].clamp(0, 1), infos['raw_rendered_images'][0].clamp(0, 1)],
+                    dim=1,
+                ).detach().cpu().numpy())
+            canvas = (canvas * 255).astype(np.uint8)
+            writer.add_image("val/raw_render", canvas, self.global_step, dataformats="HWC")
+
+        # Resume the viewer if needed
+        if self.enable_viewer:
+            self.viewer.lock.release()
+            num_train_steps_per_sec = 1.0 / (time.time() - tic)
+            num_train_rays_per_step = rendered_images.shape[0] * rendered_images.shape[
+                1] * rendered_images.shape[2]
+            num_train_rays_per_sec = num_train_rays_per_step * num_train_steps_per_sec
+            # Update the viewer state.
+            self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
+            # Update the scene.
+            self.viewer.update(self.global_step, num_train_rays_per_step)
+
+        return loss
 
     # ================================================================================ #
     #                                 Viewer                                           #
@@ -718,11 +809,12 @@ def train(config_path: str) -> None:
 
     # get dataloaders
     train_set = SingleSequenceDataset(
+        cameras=TRAIN_CAMS,
         sequence=config.sequence,
         start_idx=config.frame,
         end_idx=config.frame + 1,
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
-        length_multiplier=100,
+        length_multiplier=500,
     )
     train_loader = DataLoader(
         train_set,
@@ -730,6 +822,20 @@ def train(config_path: str) -> None:
         shuffle=True,
         num_workers=config.num_train_workers,
         persistent_workers=True)
+    val_set = SingleSequenceDataset(
+        cameras=TEST_CAMS,
+        sequence=config.sequence,
+        start_idx=config.frame,
+        end_idx=config.frame + 1,
+        n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=None,
+        shuffle=False,
+        num_workers=config.num_val_workers,
+        persistent_workers=True,
+    )
 
     # start viewer
     model.cuda()
@@ -737,12 +843,12 @@ def train(config_path: str) -> None:
         model.start_viewer(mode="training")
 
     # train
-    logger = TensorBoardLogger("tb_logs/single_frame", name="my_model")
+    logger = TensorBoardLogger("tb_logs/single_frame", name=config.name)
     trainer = pl.Trainer(
         logger=logger,
         max_steps=config.gaussian_splatting_settings.train_iterations,
     )
-    trainer.fit(model, train_loader)
+    trainer.fit(model, train_loader, val_loader)
 
 
 # ==================================================================================== #
