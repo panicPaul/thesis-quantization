@@ -8,6 +8,7 @@ from functools import partial
 from typing import Literal
 
 import lightning as pl
+import matplotlib.pyplot as plt
 import nerfview
 import numpy as np
 import torch
@@ -49,7 +50,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
     def __init__(
         self,
         sequence: int,
-        frame: int,
+        frame_idx: int,
         gaussian_splatting_settings: GaussianSplattingSettings | DictConfig,
         learning_rates: DictConfig,
         enable_viewer: bool = True,
@@ -70,8 +71,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 otherwise.
         """
         super().__init__()
-        self.frame = frame
         self.save_hyperparameters()
+        frame = frame_idx
         self.automatic_optimization = False
 
         # Save the settings
@@ -180,7 +181,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 self.rasterize = partial(
                     rasterization_2dgs,
                     radius_clip=gaussian_splatting_settings.radius_clip,
-                    distloss=gaussian_splatting_settings.dist_loss,
+                    distloss=gaussian_splatting_settings.dist_loss is not None,
+                    depth_mode='median',
                 )
             case _:
                 raise ValueError("Unknown rasterization mode: "
@@ -304,7 +306,12 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         se3_transform: UnbatchedSE3Transform | None = None,
         background: Float[torch.Tensor, "cam H W 3"] | None = None,
         camera_indices: Int[torch.Tensor, "cam"] | None = None,
-    ) -> tuple[Float[torch.Tensor, "cam H W 3"], Float[torch.Tensor, "cam H W 1"], dict]:
+    ) -> tuple[
+            Float[torch.Tensor, "cam H W 3"],
+            Float[torch.Tensor, "cam H W 1"],
+            Float[torch.Tensor, "cam H W 1"],
+            dict,
+    ]:
         """
         Args:
             intrinsics (torch.Tensor): Camera intrinsic, shape: `(cam, 3, 3)`.
@@ -324,7 +331,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         Returns:
             tuple: A tuple containing
                 - (*torch.Tensor*): RGB images, shape: `(cam, H, W, 3)`.
-                - (*torch.Tensor*): Alphas, shape: `(cam, H, W)`.
+                - (*torch.Tensor*): Alphas, shape: `(cam, H, W, 1)`.
+                - (*torch.Tensor*): Depth maps, shape: `(cam, H, W, 1)`.
                 - (*dict*): Infos, a dictionary containing additional information.
         """
 
@@ -384,7 +392,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             scales=scales,
             opacities=opacities,
             colors=colors,
-            render_mode="RGB",
+            render_mode="RGB+ED",
             viewmats=world_2_cam,
             Ks=intrinsics,
             width=image_width,
@@ -399,6 +407,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             case "2dgs":
                 images, alphas, _, _, _, _, new_infos = ret
         infos = infos | new_infos
+        depth_maps = images[:, :, :, 3:]  # get depth maps
+        images = images[:, :, :, :3]  # get RGB channels
 
         # ------------------------------- Post-processing ------------------------------ #
         # Apply screen-space denoising
@@ -435,7 +445,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         if hasattr(self, "learnable_color_correction") and camera_indices is not None:
             images = self.learnable_color_correction.forward(camera_indices, images)
 
-        return images, alphas, infos
+        return images, alphas, depth_maps, infos
 
     @torch.no_grad()
     def render(
@@ -443,6 +453,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         camera_state: nerfview.CameraState,
         img_wh: tuple[int, int],
         time_step: int = 0,
+        render_mode: Literal['color', 'depth'] = 'color',
+        depth_bounds: tuple[float, float] = (0.0, 1.0),
         is_training: bool = False,
     ) -> Float[np.ndarray, "H W 3"]:
         """Render function for NerfView."""
@@ -459,7 +471,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             rotation=DEFAULT_SE3_ROTATION.unsqueeze(0).cuda(),
             translation=DEFAULT_SE3_TRANSLATION.unsqueeze(0).cuda(),
         )
-        image, _, _ = self.forward(
+        image, _, depth, _ = self.forward(
             intrinsics=intrinsics,
             world_2_cam=None,
             cam_2_world=cam_2_world,
@@ -467,7 +479,23 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             image_width=image_width,
             se3_transform=se3,
         )
-        return image[0].detach().cpu().numpy()
+
+        if render_mode == 'color':
+            return image[0].detach().cpu().numpy()
+        else:
+            colormap = 'viridis'
+            cmap = plt.get_cmap(colormap)
+            depth = depth[0].detach().cpu().numpy().squeeze(-1)
+            # normalize with provided percentile values
+            # l = min(max(depth_bounds[0], 0), 1)
+            # r = min(max(depth_bounds[1], 0), 1)
+            # l = min(l, r)
+            # depth_lower = np.percentile(depth, l * 100)
+            # depth_upper = np.percentile(depth, r * 100)
+            depth_lower, depth_upper = depth_bounds
+            depth = (depth-depth_lower) / (depth_upper-depth_lower)
+            depth = cmap(depth)[:, :, :3]
+            return depth
 
     @torch.no_grad()
     def render_depth(
@@ -580,6 +608,13 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             loss_dict["max_scale_loss"] = max_scale_loss
             loss = loss + max_scale_loss * self.gaussian_splatting_settings.max_scale_loss
 
+        # distloss
+        if (self.gaussian_splatting_settings.dist_loss is not None and
+                self.gaussian_splatting_settings.rasterization_mode == '2dgs'):
+            distloss = infos['render_distort'].mean()
+            loss_dict["render_distort"] = distloss
+            loss = loss + distloss * self.gaussian_splatting_settings.dist_loss
+
         loss_dict["loss"] = loss
         return loss_dict
 
@@ -600,7 +635,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         for opt in optimizers:
             opt.zero_grad()
         splat_optimizers = {k: optimizers[i] for i, k in enumerate(self.splat_optimizer_keys)}
-        rendered_images, rendered_alphas, infos = self.forward(
+        rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             intrinsics=batch.intrinsics,
             world_2_cam=batch.world_2_cam,
             cam_2_world=None,
@@ -714,7 +749,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             self.viewer.lock.acquire()
             tic = time.time()
 
-        rendered_images, rendered_alphas, infos = self.forward(
+        rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             intrinsics=batch.intrinsics,
             world_2_cam=batch.world_2_cam,
             cam_2_world=None,
@@ -809,7 +844,7 @@ def train(config_path: str) -> None:
     config = load_config(config_path)
     model = GaussianSplattingSingleFrame(
         sequence=config.sequence,
-        frame=config.frame,
+        frame_idx=config.frame,
         gaussian_splatting_settings=config.gaussian_splatting_settings,
         learning_rates=config.learning_rates,
         enable_viewer=config.enable_viewer,

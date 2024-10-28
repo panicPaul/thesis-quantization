@@ -1,13 +1,12 @@
 # ===== Configuration for single-frame training =====
-name: 2dgs
+name: 3dgs
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
 
   # pre-processing settings
   use_view_dependent_color_mlp: true
-  rasterization_mode: 2dgs
-  dist_loss: false # 2dgs only
+  rasterization_mode: 3dgs
 
   # rasterization_settings
   sh_degree: 3
@@ -44,6 +43,9 @@ gaussian_splatting_settings:
   max_scale_loss: 10.0
   local_rigidity_loss: null
   background_loss: 0.1
+  dist_loss: 10.0
+  # dist_loss: null
+
   # kwargs
   lpips_network: 'alex'
 

@@ -23,7 +23,6 @@ class GaussianSplattingSettings:
     rasterization_mode: str = "default"  # 2dgs vs 3dgs
     antialiased: bool = True
     radius_clip: float = 0.0
-    dist_loss: bool = False  # only for 2D gs
 
     # post-processing settings
     background_r: float = 0.5  # hacky bullshit to shut up type checker
@@ -53,6 +52,7 @@ class GaussianSplattingSettings:
     max_scale_loss: float | None = MISSING
     local_rigidity_loss: float | None = MISSING
     background_loss: float | None = MISSING
+    dist_loss: float | None = MISSING
 
     # loss kwargs
     lpips_network: str = 'vgg'
