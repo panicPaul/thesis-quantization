@@ -79,7 +79,7 @@ class SequenceManager:
             data_dir=data_dir,
             image_downsampling_factor=image_downsampling_factor,
             cameras=cameras)
-        self.segmentation_masks = AlphaMapSequenceLoader(
+        self.alpha_maps = AlphaMapSequenceLoader(
             sequence=sequence,
             data_dir=data_dir,
             image_downsampling_factor=image_downsampling_factor,
@@ -295,6 +295,7 @@ class SequenceManager:
             cameras = tuple(range(self.n_cameras))
         intrinsics, e, _ = self.cameras
         image = self.images[idx, cameras].squeeze(0)  # remove time dimension
+        alpha_map = self.alpha_maps[idx, cameras].squeeze(0)
         segmentation_mask = self.segmentation_masks[idx, cameras].squeeze(0)
         world_2_cam = e[cameras, :]
         if len(cameras) == 1:
@@ -304,13 +305,15 @@ class SequenceManager:
 
         return SingleFrameData(
             image=image,
-            mask=segmentation_mask,
+            alpha_map=alpha_map,
+            segmentation_mask=segmentation_mask,
             intrinsics=intrinsics,
             world_2_cam=world_2_cam,
             color_correction=self.color_correction,
             se3_transform=self.se3_transforms[idx],
             sequence_id=torch.tensor(self.id),
             time_step=torch.tensor(idx),
+            camera_indices=torch.tensor(cameras),
         )
 
 

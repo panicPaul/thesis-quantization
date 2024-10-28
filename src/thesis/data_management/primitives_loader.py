@@ -564,7 +564,7 @@ class SegmentationMaskSequenceLoader(_SequenceLoader):
                 int(self.intrinsics_width // self.image_downsampling_factor),
                 int(self.intrinsics_height // self.image_downsampling_factor),
             ),
-                                 resample=Image.BILINEAR)
+                                 resample=Image.NEAREST)
             return torch.tensor(np.array(image).astype(np.float32)) / 255.0
 
         match idx:

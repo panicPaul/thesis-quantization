@@ -28,6 +28,7 @@ class SingleSequenceDataset(Dataset):
         end_idx: int | None = None,
         n_cameras_per_frame: int | None = None,
         data_dir: str = DATA_DIR_NERSEMBLE,
+        length_multiplier: int = 1,
     ) -> None:
         """
         Args:
@@ -41,6 +42,8 @@ class SingleSequenceDataset(Dataset):
             n_cameras_per_frame (int | None): Number of cameras per frame. If None,
                 all cameras are used. Otherwise they are randomly sampled.
             data_dir (str): Directory containing the data.
+            length_multiplier (int): hacky way to increase the length of the dataset. This is
+                useful for preventing excessive re-loading of the data.
         """
 
         self.sequence_manager = SequenceManager(
@@ -52,13 +55,14 @@ class SingleSequenceDataset(Dataset):
         self.n_cameras_per_frame = n_cameras_per_frame
         self.start_idx = start_idx
         self.end_idx = len(self.sequence_manager) if end_idx is None else end_idx
+        self.length_multiplier = length_multiplier
         assert self.start_idx < self.end_idx, "Start index must be less than end index."
 
     def __len__(self) -> int:
-        return self.end_idx - self.start_idx
+        return (self.end_idx - self.start_idx) * self.length_multiplier
 
     def __getitem__(self, idx: int) -> dc.SingleFrameData:
-        idx = idx + self.start_idx
+        idx = (idx + self.start_idx) % (self.end_idx - self.start_idx)
         return self.sequence_manager.get_single_frame(idx, self.n_cameras_per_frame)
 
     def prepare_data(self,
@@ -77,6 +81,7 @@ class SingleSequenceDataset(Dataset):
             se3_transform=se3_transform,
             sequence_id=batch.sequence_id.to(device),
             time_step=batch.time_step.to(device),
+            camera_indices=batch.camera_indices.to(device),
         )
 
 

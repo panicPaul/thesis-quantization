@@ -30,6 +30,8 @@ class GaussianSplattingSettings:
     background_g: float = 0.5
     background_b: float = 0.5
     screen_space_denoising_mode: str = "none"
+    camera_color_correction: bool = False
+    learnable_color_correction: bool = False
 
     # densification settings
     densification_mode: str = "default"
@@ -40,6 +42,7 @@ class GaussianSplattingSettings:
     # initialization settings
     initialization_mode: str = MISSING
     initialization_points: int = MISSING
+    scene_scale: float = 0.2
 
     # losses
     l1_image_loss: float | None = MISSING

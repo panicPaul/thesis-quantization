@@ -5,18 +5,22 @@ name: debugging
 gaussian_splatting_settings:
 
   # pre-processing settings
-  use_view_dependent_color_mlp: true
+  use_view_dependent_color_mlp: false
   rasterization_mode: 3dgs
   dist_loss: false # 2dgs only
 
   # rasterization_settings
-  sh_degree: 3
+  sh_degree: 0
 
   # post-processing settings
-  background_r: 0.5
-  background_g: 0.5
-  background_b: 0.5
+  # background_r: 0.66
+  # background_g: 0.66
+  # background_b: 0.66
+  background_r: 0.0
+  background_g: 0.0
+  background_b: 0.0
   screen_space_denoising_mode: none
+  learnable_color_correction: true
 
   # densification_settings
   densification_mode: monte_carlo_markov_chain
@@ -27,14 +31,15 @@ gaussian_splatting_settings:
 
   # initialization settings
   # initialization_mode: point_cloud
-  initialization_mode: random
+  # initialization_mode: random
+  initialization_mode: flame
   initialization_points: 30_000
 
   # losses
   l1_image_loss: 1.0
   ssim_image_loss: 0.1
   ssim_denoised_image_loss: null
-  lpips_image_loss: null # 0.05
+  lpips_image_loss: null #0.05
   anisotropy_loss: 0.1
   max_scale_loss: 10.0
   local_rigidity_loss: null
@@ -42,7 +47,7 @@ gaussian_splatting_settings:
 
   # train settings
   feature_dim: 32
-  camera_batch_size: 4
+  camera_batch_size: 2
   train_iterations: 30_000
   log_images_interval: 500
 
@@ -55,14 +60,16 @@ learning_rates:
   opacities_lr: 5e-2
   features_lr: 2.5e-3
   # colors
-  sh_0_lr: 2.5e-3
-  sh_N_lor: 1.25e-4 # i.e. 1/20 of sh_0_lr
+  sh0_lr: 2.5e-3 # shN is 1/20 of sh0
+
   # Color MLP
   color_mlp_lr: 1e-3
   color_mlp_weight_decay: 1e-6
+  # Color Correction
+  color_correction_lr: 1e-5
 
 # ---> Random other stuff
-compile: false
+compile: true
 viewer_port: 8080
 sequence: 3
 frame: 42

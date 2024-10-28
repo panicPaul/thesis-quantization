@@ -9,6 +9,9 @@ Audio[t] -> encoder -> quantizer -> decoder -> flame[t] (-> flame df)
 
 per_gaussian_feature -> flame_vertices
 
+color correction is fucking things up for some reason. (maybe inverted?)
+
+
 s03, t94 has eyes half closed
 # To Do's:
 
@@ -19,6 +22,7 @@ s03, t94 has eyes half closed
 
 - [ ] use image masks to create torso/ neck code
 - [ ] use color masks for lip loss
+
 
 management
 

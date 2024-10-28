@@ -14,7 +14,7 @@ import torch
 import viser
 from einops import rearrange, repeat
 from gsplat import DefaultStrategy, MCMCStrategy, rasterization, rasterization_2dgs
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig
 from torch import nn
@@ -24,10 +24,12 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from thesis.config import GaussianSplattingSettings, load_config
-from thesis.constants import DEFAULT_SE3_ROTATION, DEFAULT_SE3_TRANSLATION
-from thesis.data_management import SingleSequenceDataset
+from thesis.constants import DEFAULT_SE3_ROTATION, DEFAULT_SE3_TRANSLATION, TRAIN_CAMS
+from thesis.data_management import SequenceManager, SingleSequenceDataset
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
+from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
+    flame_initialization,
     point_cloud_initialization,
     random_initialization,
 )
@@ -40,6 +42,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
 
     def __init__(
         self,
+        sequence: int,
+        frame: int,
         gaussian_splatting_settings: GaussianSplattingSettings | DictConfig,
         learning_rates: DictConfig,
         enable_viewer: bool = True,
@@ -70,6 +74,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 self.splats = nn.ParameterDict(
                     random_initialization(
                         num_splats=gaussian_splatting_settings.initialization_points,
+                        scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
                         initialize_colors=not gaussian_splatting_settings
@@ -79,6 +84,20 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 self.splats = nn.ParameterDict(
                     point_cloud_initialization(
                         num_splats=gaussian_splatting_settings.initialization_points,
+                        scene_scale=gaussian_splatting_settings.scene_scale,
+                        feature_dim=gaussian_splatting_settings.feature_dim,
+                        colors_sh_degree=gaussian_splatting_settings.sh_degree,
+                        initialize_colors=not gaussian_splatting_settings
+                        .use_view_dependent_color_mlp,
+                    ))
+            case "flame":
+                # load flame params
+                sequence_manager = SequenceManager(sequence)
+                flame_params = sequence_manager.flame_params[frame:frame + 1]
+                self.splats = nn.ParameterDict(
+                    flame_initialization(
+                        flame_params=flame_params,
+                        scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
                         initialize_colors=not gaussian_splatting_settings
@@ -114,20 +133,12 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                                  f"{gaussian_splatting_settings.densification_mode}")
         self.strategy_state = self.strategy.initialize_state()
 
-        # View-dependent color module
+        # View-dependent color module (pre-processing)
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
             self.view_dependent_color_mlp = ViewDependentColorMLP(
                 feature_dim=gaussian_splatting_settings.feature_dim,
                 sh_degree=gaussian_splatting_settings.sh_degree,
             )
-
-        # Screen-space denoising
-        match gaussian_splatting_settings.screen_space_denoising_mode:
-            case 'none':
-                self.screen_space_denoiser = lambda img, alphas: img
-            case _:
-                raise ValueError("Unknown screen-space denoising mode: "
-                                 f"{gaussian_splatting_settings.screen_space_denoising_mode}")
 
         # Get the rasterization function
         match gaussian_splatting_settings.rasterization_mode:
@@ -148,6 +159,18 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 raise ValueError("Unknown rasterization mode: "
                                  f"{gaussian_splatting_settings.rasterization_mode}")
 
+        # Screen-space denoising (post-processing)
+        match gaussian_splatting_settings.screen_space_denoising_mode:
+            case 'none':
+                self.screen_space_denoiser = lambda img, alphas: img
+            case _:
+                raise ValueError("Unknown screen-space denoising mode: "
+                                 f"{gaussian_splatting_settings.screen_space_denoising_mode}")
+
+        # Learnable color correction (post-processing)
+        if gaussian_splatting_settings.learnable_color_correction:
+            self.learnable_color_correction = LearnableColorCorrection(len(TRAIN_CAMS))
+
         # Set up loss functions
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
@@ -161,33 +184,61 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         Returns:
             A tuple containing the splat optimizers and other optimizers.
         """
+
+        # splat optimizers
         batch_size = self.gaussian_splatting_settings.camera_batch_size
-        scaling = math.sqrt(batch_size)
+        batch_scaling = math.sqrt(batch_size)
+        scene_scale = self.gaussian_splatting_settings.scene_scale
+        splat_optimizers = {}
+        splats_learning_rates = {
+            "means": self.learning_rates.means_lr * batch_scaling * scene_scale,
+            "scales": self.learning_rates.scales_lr * batch_scaling,
+            "quats": self.learning_rates.quats_lr * batch_scaling,
+            "opacities": self.learning_rates.opacities_lr * batch_scaling,
+            "features": self.learning_rates.features_lr * batch_scaling,
+        }
         splat_optimizers = {
             name:
                 Adam(
                     [{
                         "params": self.splats[name],
-                        "lr": self.learning_rates[f"{name}_lr"] * math.sqrt(batch_size),
+                        "lr": lr,
                         "name": name,
                     }],
-                    eps=1e-15 / math.sqrt(batch_size),
+                    eps=1e-15 / batch_scaling,
+                    # TODO: check betas logic when cfg.batch_size is larger than 10 betas[0]
+                    #       will be zero.
                     betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
-                ) for name in ["means", "scales", "quats", "opacities", "features"]
+                ) for name, lr in splats_learning_rates.items()
         }
         if not self.gaussian_splatting_settings.use_view_dependent_color_mlp:
-            splat_optimizers["colors"] = Adam(
-                [self.splats["colors"]],
-                lr=self.learning_rates.color_lr * scaling,
-                eps=1e-15 / math.sqrt(batch_size),
+            splat_optimizers["sh0"] = Adam(
+                [self.splats["sh0"]],
+                lr=self.learning_rates.sh0_lr * batch_scaling,
+                eps=1e-15 / batch_scaling,
                 betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
             )
+            splat_optimizers["shN"] = Adam(
+                [self.splats["shN"]],
+                lr=(self.learning_rates.sh0_lr / 20) * batch_scaling,
+                eps=1e-15 / batch_scaling,
+                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
+            )
+
+        # other optimizers
         other_optimizers = {}
         if hasattr(self, "view_dependent_color_mlp"):
             other_optimizers["view_dependent_color_mlp"] = Adam(
                 self.view_dependent_color_mlp.parameters(),
-                lr=self.learning_rates.color_mlp_lr * scaling,
+                lr=self.learning_rates.color_mlp_lr * batch_scaling,
             )
+        if hasattr(self, "learnable_color_correction"):
+            other_optimizers["learnable_color_correction"] = Adam(
+                self.learnable_color_correction.parameters(),
+                lr=self.learning_rates.color_correction_lr * batch_scaling,
+            )
+
+        # schedulers
         schedulers = {}
         schedulers["means"] = torch.optim.lr_scheduler.ExponentialLR(
             splat_optimizers["means"],
@@ -196,11 +247,6 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         self.splat_optimizer_keys = list(splat_optimizers.keys())
         scheduler_list = list(schedulers.values())
         return optimizer_list, scheduler_list
-
-    def _compile(self, mode: Literal['default', 'max-autotune'] = "default"):
-        """Compile some of the submodules."""
-        if hasattr(self, "view_dependent_color_mlp"):
-            self.view_dependent_color_mlp = self.view_dependent_color_mlp.compile(mode=mode)
 
     # ================================================================================ #
     #                                 Rasterization                                    #
@@ -217,6 +263,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         cur_sh_degree: int | None = None,
         se3_transform: UnbatchedSE3Transform | None = None,
         background: Float[torch.Tensor, "cam H W 3"] | None = None,
+        camera_indices: Int[torch.Tensor, "cam"] | None = None,
     ) -> tuple[Float[torch.Tensor, "cam H W 3"], Float[torch.Tensor, "cam H W 1"], dict]:
         """
         Args:
@@ -231,6 +278,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 `None`, no transformation is applied.
             background (torch.Tensor): Background color, shape: `(cam, H, W, 3)`. If `None`,
                 the default background is used.
+            camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
+                color correction matrix. Shape: `(cam,)`.
 
         Returns:
             tuple: A tuple containing
@@ -270,7 +319,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             ).squeeze(-1)
             world_2_cam[..., 3, 3] = 1
 
-            # ------------------------------- Pre-processing ------------------------------ #
+        # ------------------------------- Pre-processing ------------------------------ #
         if se3_transform is not None:
             rotation = se3_transform.rotation
             translation = se3_transform.translation
@@ -283,7 +332,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             colors = self.view_dependent_color_mlp.forward(features, means, cam_2_world,
                                                            cur_sh_degree)
         else:
-            colors = self.splats["colors"]
+            colors = colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)
         scales = torch.exp(self.splats["scales"])
         opacities = torch.sigmoid(self.splats["opacities"])
 
@@ -321,7 +370,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         images = images*alphas + (1-alphas) * background
 
         # Apply color correction
-        if color_correction is not None:
+        if (color_correction is not None and
+                self.gaussian_splatting_settings.camera_color_correction):
             # Reshape color_correction to (batch * height * width, 3, 3)
             batch_size, height, width, _ = images.shape
             color_correction = color_correction.expand(batch_size * height * width, -1, -1)
@@ -339,6 +389,11 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             corrected_colors = corrected_colors.permute(0, 1, 2, 4, 3).contiguous()
             corrected_colors = corrected_colors.view(batch_size, height, width, 3)
             images = corrected_colors
+
+        # Apply learnable color correction
+        if hasattr(self, "learnable_color_correction") and camera_indices is not None:
+            images = self.learnable_color_correction.forward(camera_indices, images)
+
         return images, alphas, infos
 
     @torch.no_grad()
@@ -405,14 +460,20 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         # set up
         loss_dict = {}
         loss = 0.0
-        mask = repeat(target_alphas, "cam H W -> cam H W f", f=3)
+        alpha_map = repeat(target_alphas, "cam H W -> cam H W f", f=3)
         background = infos['background']
         background = repeat(
-            background, "f -> cam H W f", cam=mask.shape[0], H=mask.shape[1], W=mask.shape[2])
+            background,
+            "f -> cam H W f",
+            cam=alpha_map.shape[0],
+            H=alpha_map.shape[1],
+            W=alpha_map.shape[2])
         rasterized_images = infos['rasterized_images']
-        target_images = target_images*mask + (1-mask) * background
-        denoised_foreground = rendered_images*mask + (1-mask) * background  # use the target mask
-        raw_foreground = rasterized_images*mask + (1-mask) * background  # use the target mask
+        target_images = target_images*alpha_map + (1-alpha_map) * background
+        denoised_foreground = rendered_images*alpha_map + (
+            1-alpha_map) * background  # use the target alpha_map
+        raw_foreground = rasterized_images*alpha_map + (
+            1-alpha_map) * background  # use the target alpha_map
         # l1 (foreground) loss for rasterized images
         if self.gaussian_splatting_settings.l1_image_loss is not None:
             l1_loss = torch.sum(torch.abs(raw_foreground - target_images), dim=-1).mean()
@@ -494,9 +555,10 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             cam_2_world=None,
             image_height=int(batch.image.shape[1]),
             image_width=int(batch.image.shape[2]),
-            # color_correction=batch.color_correction, # TODO: fix color correction
+            color_correction=batch.color_correction,
             cur_sh_degree=self.get_cur_sh_degree(self.global_step),
             se3_transform=batch.se3_transform,
+            camera_indices=batch.camera_indices,
         )
 
         # Pre-backward densification
@@ -513,7 +575,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             rendered_images=rendered_images,
             rendered_alphas=rendered_alphas,
             target_images=batch.image,
-            target_alphas=batch.mask,
+            target_alphas=batch.alpha_map,
             infos=infos,
         )
         loss = loss_dict["loss"]
@@ -624,7 +686,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
 
 
 # ==================================================================================== #
-#                                 Train  Loop                                          #
+#                                 Train 8 Loop                                          #
 # ==================================================================================== #
 
 
@@ -634,12 +696,17 @@ def train(config_path: str) -> None:
     # set up model
     config = load_config(config_path)
     model = GaussianSplattingSingleFrame(
-        config.gaussian_splatting_settings,
-        config.learning_rates,
+        sequence=config.sequence,
+        frame=config.frame,
+        gaussian_splatting_settings=config.gaussian_splatting_settings,
+        learning_rates=config.learning_rates,
         enable_viewer=config.enable_viewer,
     )
     if config.compile:
-        model._compile()
+        # model._compile()
+        print("Compiling...", end="\t")
+        model.compile()
+        print("Done.")
 
     torch.set_float32_matmul_precision('high')
 
@@ -654,7 +721,9 @@ def train(config_path: str) -> None:
         sequence=config.sequence,
         start_idx=config.frame,
         end_idx=config.frame + 1,
-        n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size)
+        n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
+        length_multiplier=100,
+    )
     train_loader = DataLoader(
         train_set,
         batch_size=None,

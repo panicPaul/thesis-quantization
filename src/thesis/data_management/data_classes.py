@@ -105,22 +105,26 @@ class SingleFrameData(NamedTuple):
     Args:
         image (torch.Tensor): Image tensor. Shape: `(cam, H, W, 3)`.
         mask (torch.Tensor): Mask tensor. Shape: `(cam, H, W)`.
+        segmentation_mask (torch.Tensor): Segmentation mask tensor. Shape: `(cam, H, W, 3)`.
         intrinsics (torch.Tensor): Intrinsics tensor. Shape: `(cam, 3, 3)`.
         world_2_cam (torch.Tensor): World2Cam tensor. Shape: `(cam, 4, 4)`.
         color_correction (torch.Tensor): Color correction tensor. Shape: `(cam, 3, 3)`.
         se3_transform (SE3Transform): SE3 transform object.
         sequence_id (torch.Tensor): Sequence ID tensor. Shape: `(cam,)`.
         time_step (torch.Tensor): Time step tensor. Shape: `(cam,)`.
+        camera_indices (torch.Tensor): Camera indices tensor. Shape: `(cam,)`.
     """
 
     image: Float[torch.Tensor, "cam H W 3"]
-    mask: Float[torch.Tensor, "cam H W"]
+    alpha_map: Float[torch.Tensor, "cam H W"]
+    segmentation_mask: Float[torch.Tensor, "cam H W 3"]
     intrinsics: Float[torch.Tensor, "cam 3 3"]
     world_2_cam: Float[torch.Tensor, "cam 4 4"]
     color_correction: Float[torch.Tensor, "cam 3 3"]
     se3_transform: UnbatchedSE3Transform
     sequence_id: Int[torch.Tensor, ""]
     time_step: Int[torch.Tensor, ""]
+    camera_indices: Int[torch.Tensor, "cam"]
 
 
 class QuantizationData(NamedTuple):

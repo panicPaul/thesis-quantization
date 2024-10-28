@@ -121,5 +121,6 @@ def apply_se3_to_orientation(
     orientation: Float[torch.Tensor, "... 4"],
 ) -> Float[torch.Tensor, "... 4"]:
     """Apply the SE3 transform to an orientation."""
+    orientation = orientation / torch.norm(orientation, dim=-1, keepdim=True)
     rotation_quat = rotation_matrix_to_quaternion(rotation)
     return quaternion_multiplication(rotation_quat, orientation)
