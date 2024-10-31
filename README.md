@@ -14,6 +14,9 @@ color correction is fucking things up for some reason. (maybe inverted?)
 
 s03, t94 has eyes half closed
 # To Do's:
+- [ ] debug the KNN and flame deformation
+
+
 - [ ] dataset that supports flame, audio windowing but not image
 - [ ] video training
 - [ ] new deformation field

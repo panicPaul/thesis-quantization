@@ -17,7 +17,6 @@ class GaussianSplattingSettings:
 
     # pre-processing settings
     use_view_dependent_color_mlp: bool = True
-    latent_adjustments_mode: str = "none"  # none, direct_prediction, flame_vertex_latents
     latent_adjustments_use_audio_latents: bool = False
     latent_adjustments_use_per_gaussian_latents: bool = False
     latent_adjustments_use_flame_vertex_latents: bool = False

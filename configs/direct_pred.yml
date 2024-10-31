@@ -6,12 +6,11 @@ gaussian_splatting_settings:
 
   # pre-processing settings
   use_view_dependent_color_mlp: true
-  rasterization_mode: 3dgs
-  latent_adjustments_mode: direct_prediction
+  rasterization_mode: 2dgs
   latent_adjustments_use_per_gaussian_latents: true
-  latent_adjustments_use_flame_params: false
+  latent_adjustments_use_flame_vertex_latents: true
   prior_window_size: 9
-  motion_prediction_ease_in_steps: 1_000
+  motion_prediction_ease_in_steps: 1_000 # not working rn
 
   # rasterization_settings
   sh_degree: 3
@@ -30,14 +29,13 @@ gaussian_splatting_settings:
   densification_mode: monte_carlo_markov_chain
   # densification_mode: default
   refine_start_iteration: 500
-  refine_stop_iteration: 90_000
-  cap_max: 100_000
+  refine_stop_iteration: 30_000
+  cap_max: 250_000
 
   # initialization settings
   # initialization_mode: point_cloud
-  # initialization_mode: random
-  # initialization_mode: flame
-  initialization_mode: pre_trained
+  initialization_mode: flame
+  # initialization_mode: pre_trained
   initialization_points: 30_000
   initialization_checkpoint: tb_logs/single_frame/3dgs/version_0/checkpoints/epoch=24-step=100000.ckpt
 
@@ -89,10 +87,8 @@ learning_rates:
   color_mlp_weight_decay: 1e-6
   # Color Correction
   color_correction_lr: 1e-5
-  # Latent adjustments
-  latent_adjustments_lr: 3e-4
-  # motion prediction
-  motion_prediction_lr: 3e-4
+  # Deformation field
+  deformation_field_lr: 3e-4
 
 # ---> Random other stuff
 compile: true

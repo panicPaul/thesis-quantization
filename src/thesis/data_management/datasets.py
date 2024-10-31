@@ -133,7 +133,7 @@ class MultiSequenceDataset(Dataset):
         single_frame = self.msm[sequence_idx].get_single_frame(frame_idx, self.n_cameras_per_frame)
         window_indices = slice(
             max(frame_idx - self.window_size // 2, 0),
-            min(frame_idx + self.window_size // 2 + 1 + 1, len(self.msm[sequence_idx])))
+            min(frame_idx + self.window_size // 2 + 1, len(self.msm[sequence_idx])))
         flame_params = self.msm[sequence_idx].flame_params[window_indices]
         audio_features = self.msm[sequence_idx].audio_features[window_indices]
         if frame_idx - self.window_size // 2 < 0:

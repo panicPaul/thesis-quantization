@@ -26,6 +26,7 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from thesis.config import GaussianSplattingSettings, load_config
 from thesis.constants import (
+    CANONICAL_FLAME_PARAMS,
     DEFAULT_SE3_ROTATION,
     DEFAULT_SE3_TRANSLATION,
     TEST_CAMS,
@@ -33,13 +34,9 @@ from thesis.constants import (
     TRAIN_CAMS,
     TRAIN_SEQUENCES,
 )
-from thesis.data_management import (
-    MultiSequenceDataset,
-    SequenceManager,
-    UnbatchedFlameParams,
-)
+from thesis.data_management import MultiSequenceDataset, UnbatchedFlameParams
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
-from thesis.deformation_field.direct_prediction import DirectPrediction
+from thesis.deformation_field.flame_deformation import FlameDeformation
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
@@ -47,7 +44,6 @@ from thesis.gaussian_splatting.initialize_splats import (
     pre_trained_initialization,
     random_initialization,
 )
-from thesis.gaussian_splatting.motion_prediction import MotionPrediction
 from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
 from thesis.utils import (
     apply_se3_to_orientation,
@@ -130,11 +126,15 @@ class GaussianSplattingVideo(pl.LightningModule):
                     ))
             case "flame":
                 # load flame params
-                sequence_manager = SequenceManager(sequence)
-                flame_params = sequence_manager.flame_params[frame:frame + 1]
+                canonical_flame_params = UnbatchedFlameParams(
+                    *(a.to('cuda') for a in CANONICAL_FLAME_PARAMS))
+                self._canonical_flame_params = UnbatchedFlameParams(
+                    *(a.repeat(gaussian_splatting_settings.prior_window_size, 1)
+                      for a in canonical_flame_params))
+
                 self.splats = nn.ParameterDict(
                     flame_initialization(
-                        flame_params=flame_params,
+                        flame_params=canonical_flame_params,
                         scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
@@ -175,27 +175,20 @@ class GaussianSplattingVideo(pl.LightningModule):
                                  f"{gaussian_splatting_settings.densification_mode}")
         self.strategy_state = self.strategy.initialize_state()
 
-        # Latent adjustments (pre-processing)
-        match gaussian_splatting_settings.latent_adjustments_mode:
-            case "none":
-                pass
-            case "direct_prediction":
-                self.latent_adjustments = DirectPrediction(
-                    window_size=gaussian_splatting_settings.prior_window_size,
-                    per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
-                    use_audio_latents=gaussian_splatting_settings
-                    .latent_adjustments_use_audio_latents,
-                    use_per_gaussian_latents=gaussian_splatting_settings
-                    .latent_adjustments_use_per_gaussian_latents,
-                    use_flame_params=gaussian_splatting_settings
-                    .latent_adjustments_use_flame_params,
-                )
-            case _:
-                raise ValueError("Unknown latent adjustments mode: "
-                                 f"{gaussian_splatting_settings.latent_adjustments}")
+        # quantization (pre-processing)
+        # TODO: implement quantization for flame and audio
 
-        # Motion prediction (pre-processing)
-        self.motion_prediction = MotionPrediction(gaussian_splatting_settings.feature_dim)
+        # deformation_field (pre-processing)
+        self.deformation_field = FlameDeformation(
+            window_size=gaussian_splatting_settings.prior_window_size,
+            latent_dim=gaussian_splatting_settings.feature_dim,
+            audio_latent_dim=-1,
+            use_audio_latents=gaussian_splatting_settings.latent_adjustments_use_audio_latents,
+            use_per_gaussian_latents=gaussian_splatting_settings
+            .latent_adjustments_use_per_gaussian_latents,
+            use_flame_vertex_latents=gaussian_splatting_settings
+            .latent_adjustments_use_flame_vertex_latents,
+        )
 
         # View-dependent color module (pre-processing)
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
@@ -316,16 +309,10 @@ class GaussianSplattingVideo(pl.LightningModule):
                 self.learnable_color_correction.parameters(),
                 lr=self.learning_rates.color_correction_lr * batch_scaling,
             )
-        if hasattr(self, "latent_adjustments"):
-            other_optimizers["latent_adjustments"] = Adam(
-                self.latent_adjustments.parameters(),
-                lr=self.learning_rates.latent_adjustments_lr * batch_scaling,
-            )
-        if hasattr(self, "motion_prediction"):
-            other_optimizers["motion_prediction"] = Adam(
-                self.motion_prediction.parameters(),
-                lr=self.learning_rates.motion_prediction_lr * batch_scaling,
-            )
+        other_optimizers["deformation_field"] = Adam(
+            self.deformation_field.parameters(),
+            lr=self.learning_rates.deformation_field_lr * batch_scaling,
+        )
 
         # schedulers
         schedulers = {}
@@ -377,7 +364,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
                 color correction matrix. Shape: `(cam,)`.
             flame_params (torch.Tensor): Windowed flame parameters.
-            audio_features (torch.Tensor): Windowed audio features. Shape: 
+            audio_features (torch.Tensor): Windowed audio features. Shape:
                 `(cam, window_size, 1024)`.
 
         Returns:
@@ -393,6 +380,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             cur_sh_degree = self.max_sh_degree
         means = self.splats["means"]
         quats = self.splats["quats"]
+        features = self.splats["features"]
         if background is None:
             background = self.default_background
             background.to(means.device)
@@ -419,26 +407,18 @@ class GaussianSplattingVideo(pl.LightningModule):
             world_2_cam[..., 3, 3] = 1
 
         # ------------------------------- Pre-processing ------------------------------ #
-        # latent adjustments
-        match self.gaussian_splatting_settings.latent_adjustments_mode:
-            case "none":
-                features = self.splats["features"]
-            case "direct_prediction":
-                features = self.latent_adjustments.forward(
-                    means=means,
-                    per_gaussian_latents=self.splats["features"],
-                    audio_features=audio_features,
-                    flame_params=flame_params,
-                )
+        # quantization
+        # TODO: implement quantization for flame and audio
 
-        # motion prediction
-        means, quats = self.motion_prediction.forward(means, quats, features)
-
-        if self.global_step < self.gaussian_splatting_settings.motion_prediction_ease_in_steps:
-            means = self.splats["means"] + (means - self.splats["means"]) * \
-                self.global_step / self.gaussian_splatting_settings.motion_prediction_ease_in_steps
-            quats = self.splats["quats"] + (quats - self.splats["quats"]) * \
-                self.global_step / self.gaussian_splatting_settings.motion_prediction_ease_in_steps
+        # deformation field
+        if flame_params is not None:
+            means, quats, features, cache_hit_rate = self.deformation_field.forward(
+                means=means,
+                quats=quats,
+                features=features,
+                flame_params=flame_params,
+                audio_latents=audio_features)
+            infos["cache_hit_rate"] = cache_hit_rate
 
         # se3 transformation
         if se3_transform is not None:
@@ -537,8 +517,12 @@ class GaussianSplattingVideo(pl.LightningModule):
 
         image_width, image_height = img_wh
         c2w = camera_state.c2w
-        # maybe flip them here?
-        hacky_world_transform = np.array([[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
+        # hacky world transform for old data
+        # hacky_world_transform = np.array([[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0],
+        # [0, 0, 0, 1]],
+        #                                  dtype=np.float32)
+        # hacky world transform for new data
+        hacky_world_transform = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]],
                                          dtype=np.float32)
         c2w = hacky_world_transform @ c2w
         cam_2_world = torch.tensor(c2w).unsqueeze(0).float().cuda()
@@ -554,6 +538,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             image_height=image_height,
             image_width=image_width,
             se3_transform=se3,
+            flame_params=self._canonical_flame_params,
         )
 
         if render_mode == 'color':
@@ -570,7 +555,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             # depth_upper = np.percentile(depth, r * 100)
             depth_lower, depth_upper = depth_bounds
             depth = (depth-depth_lower) / (depth_upper-depth_lower)
-            depth = cmap(depth)[:, :, :3]
+            depth = cmap(1 - depth)[:, :, :3]  # brighter should be closer
             return depth
 
     @torch.no_grad()
@@ -884,6 +869,8 @@ class GaussianSplattingVideo(pl.LightningModule):
         loss = loss_dict["loss"]
         for key, value in loss_dict.items():
             self.log(f'train/{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
+        if 'cache_hit_rate' in infos:
+            self.log('train/cache_hit_rate', infos['cache_hit_rate'], on_step=True, on_epoch=False)
 
         # Backward pass and optimization
         self.manual_backward(loss)
@@ -999,26 +986,28 @@ class GaussianSplattingVideo(pl.LightningModule):
         loss = loss_dict["loss"]
         for key, value in loss_dict.items():
             self.log(f'val/{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
+        if 'cache_hit_rate' in infos:
+            self.log('val/cache_hit_rate', infos['cache_hit_rate'], on_step=True, on_epoch=False)
 
-        # TODO: move to on validation epoch end
-        # Log denoised images
-        canvas = (
-            torch.concatenate(
-                [frame.image[0].clamp(0, 1), rendered_images[0].clamp(0, 1)],
-                dim=1,
-            ).detach().cpu().numpy())
-        canvas = (canvas * 255).astype(np.uint8)
-        writer = self.logger.experiment
-        writer.add_image("val/denoised_render", canvas, self.global_step, dataformats="HWC")
-        # Log raw renders
-        if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
+        if batch_idx % 20 == 0:
+            # Log denoised images
             canvas = (
                 torch.concatenate(
-                    [batch.image[0].clamp(0, 1), infos['raw_rendered_images'][0].clamp(0, 1)],
+                    [frame.image[0].clamp(0, 1), rendered_images[0].clamp(0, 1)],
                     dim=1,
                 ).detach().cpu().numpy())
             canvas = (canvas * 255).astype(np.uint8)
-            writer.add_image("val/raw_render", canvas, self.global_step, dataformats="HWC")
+            writer = self.logger.experiment
+            writer.add_image("val/denoised_render", canvas, self.global_step, dataformats="HWC")
+            # Log raw renders
+            if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
+                canvas = (
+                    torch.concatenate(
+                        [batch.image[0].clamp(0, 1), infos['raw_rendered_images'][0].clamp(0, 1)],
+                        dim=1,
+                    ).detach().cpu().numpy())
+                canvas = (canvas * 255).astype(np.uint8)
+                writer.add_image("val/raw_render", canvas, self.global_step, dataformats="HWC")
 
         # Resume the viewer if needed
         if self.enable_viewer:

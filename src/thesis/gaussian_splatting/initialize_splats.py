@@ -118,7 +118,7 @@ def point_cloud_initialization(
 
     if feature_dim is not None:
         splats["features"] = nn.Parameter(torch.randn((num_splats, feature_dim)))
-    if spherical_harmonics:
+    if initialize_spherical_harmonics:
         spherical_harmonics = torch.zeros((num_splats, (colors_sh_degree + 1)**2, 3))
         sh0 = rgb_to_sh(colors)
         spherical_harmonics[:, 0, :] = sh0
@@ -156,6 +156,7 @@ def flame_initialization(
     """
 
     flame_head = FlameHead()
+    flame_head.to(flame_params.expr.device)
     vertices = flame_head.forward(flame_params)
     means = vertices.squeeze(0)
     assert means.ndim == 2, 'Means should have shape (num_vertices, 3)'
