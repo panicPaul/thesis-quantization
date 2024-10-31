@@ -61,5 +61,7 @@ def apply_barycentric_weights(
     Returns:
         (Float[torch.Tensor, "num_queries ...]): The weighted features.
     """
-
-    return torch.sum(barycentric_weights.unsqueeze(-1) * neighbor_features, dim=-2)
+    feature_dims = neighbor_features.ndim - 2
+    for _ in range(feature_dims):
+        barycentric_weights = barycentric_weights.unsqueeze(-1)
+    return torch.sum(barycentric_weights * neighbor_features, dim=1)

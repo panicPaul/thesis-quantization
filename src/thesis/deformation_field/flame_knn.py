@@ -29,6 +29,7 @@ class FlameKNN(nn.Module):
         self.register_buffer('index_cache', None)  # (n_gaussians, k)
         flame_head = FlameHead()
         canonical_params = UnbatchedFlameParams(*canonical_params)
+        flame_head.to(canonical_params.expr.device)
         canonical_vertices = flame_head.forward(canonical_params)
         self.canonical_vertices = canonical_vertices.squeeze(0).cuda()  # (n_vertices, 3)
         self.index = torch_geometric.nn.pool.L2KNNIndex(emb=self.canonical_vertices)
@@ -36,23 +37,23 @@ class FlameKNN(nn.Module):
     def _gather_per_gaussian(
         self,
         indices: Int[torch.Tensor, "k"],
-        feature: Float[torch.Tensor, 'n_vertices dim'],
-    ) -> Float[torch.Tensor, "k dim"]:
+        feature: Float[torch.Tensor, 'n_vertices ...'],
+    ) -> Float[torch.Tensor, "k ..."]:
         """
         Args:
             indices (Int[torch.Tensor, 'k']): The indices of the nearest neighbors.
-            feature (Float[torch.Tensor, 'n_vertices dim']): The features of the vertices.
+            feature (Float[torch.Tensor, 'n_vertices ...']): The features of the vertices.
 
         Returns:
-            Float[torch.Tensor, 'k dim']: The features of the nearest neighbors.
+            Float[torch.Tensor, 'k ...']: The features of the nearest neighbors.
         """
         return feature[indices]
 
     def gather(
         self,
         indices: Int[torch.Tensor, "n_gaussians k"],
-        feature: Float[torch.Tensor, "n_vertices dim"],
-    ) -> Float[torch.Tensor, "n_gaussians k dim"]:
+        feature: Float[torch.Tensor, "n_vertices ..."],
+    ) -> Float[torch.Tensor, "n_gaussians k ..."]:
         """
         Args:
             indices (Int[torch.Tensor, 'n_gaussians k']): The indices of the nearest neighbors.
@@ -79,32 +80,37 @@ class FlameKNN(nn.Module):
             tuple: The indices of the nearest neighbors as well as the cache hit rate.
         """
 
-        if refresh_cache or self.position_cache is None or means.shape[
-                0] != self.position_cache.shape[0]:
-            self.position_cache = None
-            self.recompute_distance_cache = None
-            self.index_cache = None
-            distances, indices = self.index.search(means, k=self.k + 1)
-            distances, sort_indices = torch.sort(distances, dim=-1)
-            indices = torch.gather(indices, -1, sort_indices)
-            self.position_cache = means
-            self.index_cache = indices[:, :-1]
-            # we need to recompute if we moved more than the delta of the distance of the k-th
-            # nearest neighbor and the k+1-th nearest neighbor
-            self.recompute_distance_cache = distances[:, -1] - distances[:, -2]
-            hit_rate = 0.0
+        _, indices = self.index.search(means, k=self.k)
+        hit_rate = 0.0
+        return indices, hit_rate
 
-        else:
-            # Compute the distance between the mean and the cached positions.
-            moved_distance = torch.norm(means - self.position_cache, dim=-1)  # (n_gaussians, )
-            query_indices = torch.where(moved_distance >= self.recompute_distance_cache)[0]
-            cache_indices = torch.where(moved_distance < self.recompute_distance_cache)[0]
-            query_dists, query_neighbors = self.index.search(means[query_indices], k=self.k + 1)
-            query_dists, sort_indices = torch.sort(query_dists, dim=-1)
-            query_neighbors = torch.gather(query_neighbors, -1, sort_indices)
-            self.position_cache[query_indices] = means[query_indices]
-            self.index_cache[query_indices] = query_neighbors[:, :-1]
-            self.recompute_distance_cache[query_indices] = query_dists[:, -1] - query_dists[:, -2]
-            hit_rate = cache_indices.shape[0] / means.shape[0]
+        # if refresh_cache or self.position_cache is None or means.shape[
+        #         0] != self.position_cache.shape[0]:
+        #     self.position_cache = None
+        #     self.recompute_distance_cache = None
+        #     self.index_cache = None
+        #     distances, indices = self.index.search(means, k=self.k + 1)
+        #     distances, sort_indices = torch.sort(distances, dim=-1)
+        #     indices = torch.gather(indices, -1, sort_indices)
+        #     self.position_cache = means
+        #     self.index_cache = indices[:, :-1]
+        #     # we need to recompute if we moved more than the delta of the distance of the k-th
+        #     # nearest neighbor and the k+1-th nearest neighbor
+        #     self.recompute_distance_cache = distances[:, -1] - distances[:, -2]
+        #     hit_rate = 0.0
 
-        return self.index_cache, hit_rate
+        # else:
+        #     # Compute the distance between the mean and the cached positions.
+        #     moved_distance = torch.norm(means - self.position_cache, dim=-1)  # (n_gaussians, )
+        #     query_indices = torch.where(moved_distance >= self.recompute_distance_cache)[0]
+        #     cache_indices = torch.where(moved_distance < self.recompute_distance_cache)[0]
+        #     query_dists, query_neighbors = self.index.search(means[query_indices], k=self.k + 1)
+        #     query_dists, sort_indices = torch.sort(query_dists, dim=-1)
+        #     query_neighbors = torch.gather(query_neighbors, -1, sort_indices)
+        #     self.position_cache[query_indices] = means[query_indices]
+        #     self.index_cache[query_indices] = query_neighbors[:, :-1]
+        #     self.recompute_distance_cache[query_indices] = query_dists[:, -1] -
+        # query_dists[:, -2]
+        #     hit_rate = cache_indices.shape[0] / means.shape[0]
+
+        # return self.index_cache, hit_rate

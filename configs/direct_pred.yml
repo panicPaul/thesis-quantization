@@ -91,7 +91,7 @@ learning_rates:
   deformation_field_lr: 3e-4
 
 # ---> Random other stuff
-compile: true
+compile: false
 viewer_port: 8080
 train_sequences: [3]
 val_sequences: null

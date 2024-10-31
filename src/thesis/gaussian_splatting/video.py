@@ -36,7 +36,13 @@ from thesis.constants import (
 )
 from thesis.data_management import MultiSequenceDataset, UnbatchedFlameParams
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
-from thesis.deformation_field.flame_deformation import FlameDeformation
+from thesis.deformation_field.barycentric_weighting import (
+    apply_barycentric_weights,
+    compute_barycentric_weights,
+)
+from thesis.deformation_field.flame_knn import FlameKNN
+from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
+from thesis.flame import FlameHead
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
@@ -49,6 +55,7 @@ from thesis.utils import (
     apply_se3_to_orientation,
     apply_se3_to_point,
     assign_segmentation_class,
+    quaternion_multiplication,
 )
 
 
@@ -179,16 +186,11 @@ class GaussianSplattingVideo(pl.LightningModule):
         # TODO: implement quantization for flame and audio
 
         # deformation_field (pre-processing)
-        self.deformation_field = FlameDeformation(
-            window_size=gaussian_splatting_settings.prior_window_size,
-            latent_dim=gaussian_splatting_settings.feature_dim,
-            audio_latent_dim=-1,
-            use_audio_latents=gaussian_splatting_settings.latent_adjustments_use_audio_latents,
-            use_per_gaussian_latents=gaussian_splatting_settings
-            .latent_adjustments_use_per_gaussian_latents,
-            use_flame_vertex_latents=gaussian_splatting_settings
-            .latent_adjustments_use_flame_vertex_latents,
-        )
+        # non-optimizable
+        self.flame_head = FlameHead()
+        self.flame_knn = FlameKNN(k=3, canonical_params=canonical_flame_params)
+        self.flame_mesh_extractor = FlameMeshSE3Extraction(self.flame_head)
+        # trainable
 
         # View-dependent color module (pre-processing)
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
@@ -309,10 +311,6 @@ class GaussianSplattingVideo(pl.LightningModule):
                 self.learnable_color_correction.parameters(),
                 lr=self.learning_rates.color_correction_lr * batch_scaling,
             )
-        other_optimizers["deformation_field"] = Adam(
-            self.deformation_field.parameters(),
-            lr=self.learning_rates.deformation_field_lr * batch_scaling,
-        )
 
         # schedulers
         schedulers = {}
@@ -410,15 +408,39 @@ class GaussianSplattingVideo(pl.LightningModule):
         # quantization
         # TODO: implement quantization for flame and audio
 
-        # deformation field
-        if flame_params is not None:
-            means, quats, features, cache_hit_rate = self.deformation_field.forward(
-                means=means,
-                quats=quats,
-                features=features,
-                flame_params=flame_params,
-                audio_latents=audio_features)
-            infos["cache_hit_rate"] = cache_hit_rate
+        # query deformation_field for windowed rotation and translations
+        indices, _ = self.flame_knn.forward(means)
+        canonical_vertices = self.flame_head.forward(self._canonical_flame_params)
+        deformed_vertices = self.flame_head.forward(flame_params)
+        vertex_rotations, vertex_translations = self.flame_mesh_extractor(
+            canonical_vertices, deformed_vertices)
+        vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
+        gaussian_rotations = self.flame_knn.gather(
+            indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
+        # NOTE: I do not want to have to deal with spherical interpolation and this should be close
+        #       enough
+        gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
+        gaussian_rotations = gaussian_rotations.permute(1, 0, 2)  # (window_size, n_gaussians, 4)
+
+        vertex_translations = vertex_translations.permute(1, 0, 2)  # (n_vertices, window_size, 3)
+        gaussian_translations = self.flame_knn.gather(
+            indices, vertex_translations)  # (n_gaussians, k, window_size, 3)
+        nn_positions = self.flame_knn.gather(indices, canonical_vertices[0])  # (n_gaussians, 3)
+        barycentric_weights = compute_barycentric_weights(means, nn_positions)  # (n_gaussians, 3)
+        gaussian_translations = apply_barycentric_weights(
+            barycentric_weights, gaussian_translations)  # (n_gaussians, window_size, 3)
+        gaussian_translations = gaussian_translations.permute(1, 0,
+                                                              2)  # (window_size, n_gaussians, 3)
+
+        # apply deformation_field to means
+        window_size = self.gaussian_splatting_settings.prior_window_size
+        cur_rotation = gaussian_rotations[window_size // 2]
+        cur_translation = gaussian_translations[window_size // 2]
+        means = means + cur_translation
+        quats = nn.functional.normalize(quats, p=2, dim=-1)
+        quats = quaternion_multiplication(cur_rotation, quats)
+
+        # per gaussian fine tuning
 
         # se3 transformation
         if se3_transform is not None:
