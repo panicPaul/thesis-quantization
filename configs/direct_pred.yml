@@ -1,16 +1,18 @@
 # ===== Configuration for single-frame training =====
-name: direct_pred
+name: 3dgs
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
 
   # pre-processing settings
   use_view_dependent_color_mlp: true
-  rasterization_mode: 2dgs
-  latent_adjustments_use_per_gaussian_latents: true
-  latent_adjustments_use_flame_vertex_latents: true
+  rasterization_mode: 3dgs
   prior_window_size: 9
   motion_prediction_ease_in_steps: 1_000 # not working rn
+  per_gaussian_motion_adjustment: true
+  per_gaussian_motion_adjustment_use_audio_latents: false
+  per_gaussian_motion_adjustment_use_motion_history: true
+  audio_latent_dim: 8
 
   # rasterization_settings
   sh_degree: 3
@@ -29,7 +31,8 @@ gaussian_splatting_settings:
   densification_mode: monte_carlo_markov_chain
   # densification_mode: default
   refine_start_iteration: 500
-  refine_stop_iteration: 30_000
+  refine_stop_iteration: 90_000
+  train_iterations: 100_000
   cap_max: 250_000
 
   # initialization settings
@@ -60,6 +63,8 @@ gaussian_splatting_settings:
   neck_l1_loss: 0.0
   inner_mouth_l1_loss: 0.0
   inner_mouth_ssim_loss: 0.1
+  eyes_l1_loss: 0.0
+  eyes_ssim_loss: 0.1
 
   # kwargs
   lpips_network: 'alex'
@@ -67,7 +72,6 @@ gaussian_splatting_settings:
   # train settings
   feature_dim: 32
   camera_batch_size: 1
-  train_iterations: 100_000
   log_images_interval: 500
 
 # ---> Learning Rates
@@ -87,11 +91,11 @@ learning_rates:
   color_mlp_weight_decay: 1e-6
   # Color Correction
   color_correction_lr: 1e-5
-  # Deformation field
-  deformation_field_lr: 3e-4
+  # Gaussian fine tuning
+  motion_adjustment_lr: 3e-4
 
 # ---> Random other stuff
-compile: false
+compile: true
 viewer_port: 8080
 train_sequences: [3]
 val_sequences: null
@@ -99,4 +103,4 @@ frame: 42
 num_train_workers: 12
 num_val_workers: 4
 tensorboard_dir: logs
-enable_viewer: true
+enable_viewer: false

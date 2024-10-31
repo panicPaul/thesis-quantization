@@ -25,7 +25,7 @@ SERIALS = sorted([
     "222200047",
     "222200048",
     "222200049",
-])
+])  # NOTE: the test cam is missing i think cam_222200037
 TRAIN_SEQUENCES = list(range(3, 80))
 TEST_SEQUENCES = list(range(80, 102))
 

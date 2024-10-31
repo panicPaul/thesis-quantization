@@ -17,11 +17,12 @@ class GaussianSplattingSettings:
 
     # pre-processing settings
     use_view_dependent_color_mlp: bool = True
-    latent_adjustments_use_audio_latents: bool = False
-    latent_adjustments_use_per_gaussian_latents: bool = False
-    latent_adjustments_use_flame_vertex_latents: bool = False
     prior_window_size: int = 9
     motion_prediction_ease_in_steps: int = 1_000
+    per_gaussian_motion_adjustment: bool = True
+    per_gaussian_motion_adjustment_use_audio_latents: bool = False
+    per_gaussian_motion_adjustment_use_motion_history: bool = False
+    audio_latent_dim: int = 8
 
     # rasterization_settings
     sh_degree: int = 3

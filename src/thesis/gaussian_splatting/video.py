@@ -17,7 +17,7 @@ from einops import rearrange, repeat
 from gsplat import DefaultStrategy, MCMCStrategy, rasterization, rasterization_2dgs
 from jaxtyping import Float, Int
 from lightning.pytorch.loggers import TensorBoardLogger
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 from torch import nn
 from torch.optim import Adam, AdamW
 from torch.utils.data import DataLoader
@@ -42,6 +42,7 @@ from thesis.deformation_field.barycentric_weighting import (
 )
 from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
+from thesis.deformation_field.per_gaussian_fine_tuning import PerGaussianFineTuning
 from thesis.flame import FlameHead
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
@@ -64,8 +65,8 @@ class GaussianSplattingVideo(pl.LightningModule):
 
     def __init__(
         self,
-        train_sequences: list[int] | None,
-        val_sequences: list[int] | None,
+        train_sequences: list[int] | ListConfig | None,
+        val_sequences: list[int] | ListConfig | None,
         gaussian_splatting_settings: GaussianSplattingSettings | DictConfig,
         learning_rates: DictConfig,
         enable_viewer: bool = True,
@@ -106,6 +107,13 @@ class GaussianSplattingVideo(pl.LightningModule):
         ]).cuda()
         self.enable_viewer = enable_viewer
 
+        # Load flame params
+        canonical_flame_params = UnbatchedFlameParams(
+            *(a.to('cuda') for a in CANONICAL_FLAME_PARAMS))
+        self._canonical_flame_params = UnbatchedFlameParams(
+            *(a.repeat(gaussian_splatting_settings.prior_window_size, 1)
+              for a in canonical_flame_params))
+
         # Initialize splats
         initialization_mode = gaussian_splatting_settings.initialization_mode
         if ckpt_path is not None:
@@ -132,12 +140,6 @@ class GaussianSplattingVideo(pl.LightningModule):
                         .use_view_dependent_color_mlp,
                     ))
             case "flame":
-                # load flame params
-                canonical_flame_params = UnbatchedFlameParams(
-                    *(a.to('cuda') for a in CANONICAL_FLAME_PARAMS))
-                self._canonical_flame_params = UnbatchedFlameParams(
-                    *(a.repeat(gaussian_splatting_settings.prior_window_size, 1)
-                      for a in canonical_flame_params))
 
                 self.splats = nn.ParameterDict(
                     flame_initialization(
@@ -191,6 +193,16 @@ class GaussianSplattingVideo(pl.LightningModule):
         self.flame_knn = FlameKNN(k=3, canonical_params=canonical_flame_params)
         self.flame_mesh_extractor = FlameMeshSE3Extraction(self.flame_head)
         # trainable
+        if gaussian_splatting_settings.per_gaussian_motion_adjustment:
+            self.gaussian_motion_adjustment = PerGaussianFineTuning(
+                use_audio=gaussian_splatting_settings
+                .per_gaussian_motion_adjustment_use_audio_latents,
+                use_motion_history=gaussian_splatting_settings
+                .per_gaussian_motion_adjustment_use_motion_history,
+                window_size=gaussian_splatting_settings.prior_window_size,
+                per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
+                audio_latent_dim=gaussian_splatting_settings.audio_latent_dim,
+            )
 
         # View-dependent color module (pre-processing)
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
@@ -311,6 +323,11 @@ class GaussianSplattingVideo(pl.LightningModule):
                 self.learnable_color_correction.parameters(),
                 lr=self.learning_rates.color_correction_lr * batch_scaling,
             )
+        if hasattr(self, "gaussian_motion_adjustment"):
+            other_optimizers["gaussian_motion_adjustment"] = Adam(
+                self.gaussian_motion_adjustment.parameters(),
+                lr=self.learning_rates.motion_adjustment_lr * batch_scaling,
+            )
 
         # schedulers
         schedulers = {}
@@ -336,7 +353,7 @@ class GaussianSplattingVideo(pl.LightningModule):
         color_correction: Float[torch.Tensor, "cam 3 3"] | None = None,
         cur_sh_degree: int | None = None,
         se3_transform: UnbatchedSE3Transform | None = None,
-        background: Float[torch.Tensor, "cam H W 3"] | None = None,
+        background: Float[torch.Tensor, "3"] | None = None,
         camera_indices: Int[torch.Tensor, "cam"] | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
@@ -357,7 +374,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                 degree is used.
             se3_transform (torch.Tensor): SE3 transform matrix, shape: `(cam, 4, 4)`. If
                 `None`, no transformation is applied.
-            background (torch.Tensor): Background color, shape: `(cam, H, W, 3)`. If `None`,
+            background (torch.Tensor): Background color, shape: `(3, )`. If `None`,
                 the default background is used.
             camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
                 color correction matrix. Shape: `(cam,)`.
@@ -441,6 +458,16 @@ class GaussianSplattingVideo(pl.LightningModule):
         quats = quaternion_multiplication(cur_rotation, quats)
 
         # per gaussian fine tuning
+        if self.gaussian_splatting_settings.per_gaussian_motion_adjustment:
+            gaussian_rotations, gaussian_translations = self.gaussian_motion_adjustment.forward(
+                per_gaussian_latent=features,
+                audio_latent=audio_features,
+                motion_history=gaussian_translations,
+            )
+            means = means + gaussian_translations
+            quats = quaternion_multiplication(gaussian_rotations, quats)
+            mean_motion_adjustment = torch.norm(gaussian_translations, dim=-1).mean()
+            infos['per_gaussian_movement'] = mean_motion_adjustment
 
         # se3 transformation
         if se3_transform is not None:
@@ -892,7 +919,14 @@ class GaussianSplattingVideo(pl.LightningModule):
         for key, value in loss_dict.items():
             self.log(f'train/{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
         if 'cache_hit_rate' in infos:
-            self.log('train/cache_hit_rate', infos['cache_hit_rate'], on_step=True, on_epoch=False)
+            self.log('cache_hit_rate', infos['cache_hit_rate'], on_step=True, on_epoch=False)
+        if 'per_gaussian_movement' in infos:
+            self.log(
+                'per_gaussian_movement',
+                infos['per_gaussian_movement'],
+                on_step=True,
+                on_epoch=False)
+        self.log('num_gaussians', self.splats['means'].shape[0], on_step=True, on_epoch=False)
 
         # Backward pass and optimization
         self.manual_backward(loss)
