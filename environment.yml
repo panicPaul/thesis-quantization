@@ -19,7 +19,7 @@ dependencies:
   - cuda-cudart-dev
   - gcc=11.*
   - gxx=11.*
-  #- faiss-gpu=1.8.0
+  - faiss-gpu=1.8.0
   # pytorch3d
 # conda install pytorch-cluster -c pyg
 

@@ -33,6 +33,7 @@ from thesis.constants import (
 )
 from thesis.data_management import SequenceManager, SingleSequenceDataset
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
+from thesis.deformation_field.direct_prediction import DirectPrediction
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
@@ -164,6 +165,25 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                                  f"{gaussian_splatting_settings.densification_mode}")
         self.strategy_state = self.strategy.initialize_state()
 
+        # Latent adjustments (pre-processing)
+        match gaussian_splatting_settings.latent_adjustments_mode:
+            case "none":
+                pass
+            case "direct_prediction":
+                self.latent_adjustments = DirectPrediction(
+                    window_size=gaussian_splatting_settings.prior_window_size,
+                    per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
+                    use_audio_latents=gaussian_splatting_settings
+                    .latent_adjustments_use_audio_latents,
+                    use_per_gaussian_latents=gaussian_splatting_settings
+                    .latent_adjustments_use_per_gaussian_latents,
+                    use_flame_params=gaussian_splatting_settings
+                    .latent_adjustments_use_flame_params,
+                )
+            case _:
+                raise ValueError("Unknown latent adjustments mode: "
+                                 f"{gaussian_splatting_settings.latent_adjustments}")
+
         # View-dependent color module (pre-processing)
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
             self.view_dependent_color_mlp = ViewDependentColorMLP(
@@ -283,6 +303,11 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 self.learnable_color_correction.parameters(),
                 lr=self.learning_rates.color_correction_lr * batch_scaling,
             )
+        if hasattr(self, "latent_adjustments"):
+            other_optimizers["latent_adjustments"] = Adam(
+                self.latent_adjustments.parameters(),
+                lr=self.learning_rates.latent_adjustments_lr * batch_scaling,
+            )
 
         # schedulers
         schedulers = {}
@@ -345,7 +370,6 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             cur_sh_degree = self.max_sh_degree
         means = self.splats["means"]
         quats = self.splats["quats"]
-        features = self.splats["features"]
         if background is None:
             background = self.default_background
             background.to(means.device)
@@ -372,6 +396,13 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             world_2_cam[..., 3, 3] = 1
 
         # ------------------------------- Pre-processing ------------------------------ #
+        match self.gaussian_splatting_settings.latent_adjustments_mode:
+            case "none":
+                features = self.splats["features"]
+            case "direct_prediction":
+                features = self.latent_adjustments.forward(
+                    means=means, per_gaussian_latents=self.splats["features"])
+
         if se3_transform is not None:
             rotation = se3_transform.rotation
             translation = se3_transform.translation

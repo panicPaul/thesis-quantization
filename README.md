@@ -14,13 +14,25 @@ color correction is fucking things up for some reason. (maybe inverted?)
 
 s03, t94 has eyes half closed
 # To Do's:
+- [ ] dataset that supports flame, audio windowing but not image
+- [ ] video training
+- [ ] new deformation field
 
-- [ ] depth view toggle in viewer !!!
 
-- [ ] use image masks to create torso/ neck code
-- [ ] use color masks for lip loss
-- [ ] use per gaussian classification
 
+- [ ] video sequence training
+- [ ] use per gaussian classification (do I actually need that tho?)
+- [ ] nerfview toggle to enable/ disable the classes
+
+- [ ] k-nn search in flame vertices
+- [ ] per flame latents
+- [ ] attention-aggregation
+- [ ] windowed-input (only one time step for the images should be loaded)
+- [ ] change post and pre-processing to be their own functions
+- [ ] quantize windows (i.e. 512)
+- [ ] audio feature with severe bottleneck / small discrete quantization to infer emotions etc.
+
+- [ ] we can use boring windowed predictions to feed it into our model to see how far this gets us
 
 management
 

@@ -17,6 +17,12 @@ class GaussianSplattingSettings:
 
     # pre-processing settings
     use_view_dependent_color_mlp: bool = True
+    latent_adjustments_mode: str = "none"  # none, direct_prediction, flame_vertex_latents
+    latent_adjustments_use_audio_latents: bool = False
+    latent_adjustments_use_per_gaussian_latents: bool = False
+    latent_adjustments_use_flame_vertex_latents: bool = False
+    prior_window_size: int = 9
+    motion_prediction_ease_in_steps: int = 1_000
 
     # rasterization_settings
     sh_degree: int = 3
@@ -41,6 +47,7 @@ class GaussianSplattingSettings:
     # initialization settings
     initialization_mode: str = MISSING
     initialization_points: int = MISSING
+    initialization_checkpoint: str = MISSING
     scene_scale: float = 0.2
 
     # losses

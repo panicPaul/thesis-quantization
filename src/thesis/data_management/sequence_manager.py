@@ -279,7 +279,10 @@ class SequenceManager:
         """
         return np.random.permutation(self.n_cameras)[:n_cams].tolist()
 
-    def get_single_frame(self, idx: int, n_cams: int | None = None) -> SingleFrameData:
+    def get_single_frame(self,
+                         idx: int,
+                         n_cams: int | None = None,
+                         window_size: int = 1) -> SingleFrameData:
         """
         Get a single frame for gaussian splatting.
 

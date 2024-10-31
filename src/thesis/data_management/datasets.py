@@ -100,6 +100,7 @@ class MultiSequenceDataset(Dataset):
         image_downsampling_factor: int | float = 1,
         n_cameras_per_frame: int | None = None,
         data_dir: str = DATA_DIR_NERSEMBLE,
+        window_size: int = 1,
     ) -> None:
         """
         Args:
@@ -119,31 +120,62 @@ class MultiSequenceDataset(Dataset):
             data_dir=data_dir,
         )
         self.n_cameras_per_frame = n_cameras_per_frame
+        self.window_size = window_size
 
     def __len__(self) -> int:
         return len(self.msm)
 
-    def __getitem__(self, idx: int) -> dc.SingleFrameData:
+    def __getitem__(
+        self, idx: int
+    ) -> tuple[dc.SingleFrameData, dc.UnbatchedFlameParams, Float[torch.Tensor, "time 1024"]]:
+        """ Get a single frame and flame and audio prior information. """
         sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
-        return self.msm[sequence_idx].get_single_frame(frame_idx, self.n_cameras_per_frame)
+        single_frame = self.msm[sequence_idx].get_single_frame(frame_idx, self.n_cameras_per_frame)
+        window_indices = slice(
+            max(frame_idx - self.window_size // 2, 0),
+            min(frame_idx + self.window_size // 2 + 1 + 1, len(self.msm[sequence_idx])))
+        flame_params = self.msm[sequence_idx].flame_params[window_indices]
+        audio_features = self.msm[sequence_idx].audio_features[window_indices]
+        if frame_idx - self.window_size // 2 < 0:
+            # left padding
+            padding_size = self.window_size // 2 - frame_idx
+            shape_padding = flame_params.shape[0].unsqueeze(0).repeat(padding_size, 1)
+            expr_padding = flame_params.expr[0].unsqueeze(0).repeat(padding_size, 1)
+            neck_padding = flame_params.neck[0].unsqueeze(0).repeat(padding_size, 1)
+            jaw_padding = flame_params.jaw[0].unsqueeze(0).repeat(padding_size, 1)
+            eye_padding = flame_params.eye[0].unsqueeze(0).repeat(padding_size, 1)
+            scale_padding = flame_params.scale[0].unsqueeze(0).repeat(padding_size, 1)
+            flame_params = dc.UnbatchedFlameParams(
+                shape=torch.cat([shape_padding, flame_params.shape]),
+                expr=torch.cat([expr_padding, flame_params.expr]),
+                neck=torch.cat([neck_padding, flame_params.neck]),
+                jaw=torch.cat([jaw_padding, flame_params.jaw]),
+                eye=torch.cat([eye_padding, flame_params.eye]),
+                scale=torch.cat([scale_padding, flame_params.scale]),
+            )
+            audio_padding = audio_features[0].unsqueeze(0).repeat(padding_size, 1)
+            audio_features = torch.cat([audio_padding, audio_features])
+        if frame_idx + self.window_size // 2 + 1 >= len(self.msm[sequence_idx]):
+            # right padding
+            padding_size = frame_idx + self.window_size // 2 + 1 - len(self.msm[sequence_idx])
+            shape_padding = flame_params.shape[-1].unsqueeze(0).repeat(padding_size, 1)
+            expr_padding = flame_params.expr[-1].unsqueeze(0).repeat(padding_size, 1)
+            neck_padding = flame_params.neck[-1].unsqueeze(0).repeat(padding_size, 1)
+            jaw_padding = flame_params.jaw[-1].unsqueeze(0).repeat(padding_size, 1)
+            eye_padding = flame_params.eye[-1].unsqueeze(0).repeat(padding_size, 1)
+            scale_padding = flame_params.scale[-1].unsqueeze(0).repeat(padding_size, 1)
+            flame_params = dc.UnbatchedFlameParams(
+                shape=torch.cat([flame_params.shape, shape_padding]),
+                expr=torch.cat([flame_params.expr, expr_padding]),
+                neck=torch.cat([flame_params.neck, neck_padding]),
+                jaw=torch.cat([flame_params.jaw, jaw_padding]),
+                eye=torch.cat([flame_params.eye, eye_padding]),
+                scale=torch.cat([flame_params.scale, scale_padding]),
+            )
+            audio_padding = audio_features[-1].unsqueeze(0).repeat(padding_size, 1)
+            audio_features = torch.cat([audio_features, audio_padding])
 
-    def prepare_data(self,
-                     batch: dc.SingleFrameData,
-                     device: torch.device | str = "cuda") -> dc.SingleFrameData:
-        se3_transform = dc.UnbatchedSE3Transform(
-            rotation=batch.se3_transform.rotation.to(device),
-            translation=batch.se3_transform.translation.to(device),
-        )
-        return dc.SingleFrameData(
-            image=batch.image.to(device),
-            mask=batch.mask.to(device),
-            intrinsics=batch.intrinsics.to(device),
-            world_2_cam=batch.world_2_cam.to(device),
-            color_correction=batch.color_correction.to(device),
-            se3_transform=se3_transform,
-            sequence_id=batch.sequence_id,
-            time_step=batch.time_step,
-        )
+        return single_frame, flame_params, audio_features
 
 
 # ==================================================================================== #
