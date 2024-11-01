@@ -9,6 +9,7 @@ import numpy as np
 import pydub
 import soundfile as sf
 import torch
+from einops import repeat
 from jaxtyping import Float, Int
 from tqdm import tqdm
 
@@ -97,18 +98,25 @@ def audio_to_flame(
     model.eval()
     model.to('cuda')
 
-    expressions = []
-    jaws = []
-    for i in tqdm(
-            range(0, audio_features.shape[0], batch_size), desc='Predicting flame parameters'):
-        batch = audio_features[i:i + batch_size].cuda()
-        expr, jaw = model.forward(batch)
-        expressions.append(expr)
-        jaws.append(jaw)
-    expressions = torch.cat(expressions, dim=0)
-    jaws = torch.cat(jaws, dim=0)
+    window_size = model.window_size
+    n_windows = audio_features.shape[0] - window_size + 1
+    all_expressions = torch.zeros((n_windows, 100), device='cuda')
+    all_jaw_codes = torch.zeros((n_windows, 3), device='cuda')
+    for start_idx in range(0, n_windows, batch_size):
+        end_idx = min(start_idx + batch_size, n_windows)
 
-    return expressions, jaws
+        # Create batch of windows
+        batch_windows = torch.stack(
+            [audio_features[i:i + window_size] for i in range(start_idx, end_idx)])
+
+        # Forward pass
+        expressions, jaw_codes = model(batch_windows)
+
+        # Store results
+        all_expressions[start_idx:end_idx] = expressions
+        all_jaw_codes[start_idx:end_idx] = jaw_codes
+
+    return all_expressions, all_jaw_codes
 
 
 def load_flame_parameters(
@@ -152,9 +160,10 @@ def load_flame_loop(n_frames: int) -> tuple[UnbatchedFlameParams, UnbatchedSE3Tr
         eye=flame_params.eye.cuda(),
         scale=flame_params.scale.cuda(),
     )
+    se_3_transforms = sm.se3_transforms[:n_frames]
     se_3_transforms = UnbatchedSE3Transform(
-        rotation=torch.zeros(n_frames, 3, 3).cuda(),
-        translation=torch.zeros(n_frames, 3).cuda(),
+        rotation=se_3_transforms.rotation.cuda(),
+        translation=se_3_transforms.translation.cuda(),
     )
     return flame_params, se_3_transforms
 
@@ -170,13 +179,12 @@ def render_video(
                                                            [0.0000e+00, 4.0988e+03, 8.0185e+02],
                                                            [0.0000e+00, 0.0000e+00, 1.0000e+00]]),
     world_2_cam: Float[torch.Tensor, '4 4'] | Float[torch.Tensor, 'time 4 4'] = torch.tensor(
-        [[0.9058176279067993, -0.24615782499313354, -0.34481990337371826, -0.08591265231370926],
-         [-0.03770417720079422, -0.8575000762939453, 0.5131004452705383, 0.13644646108150482],
-         [-0.42198675870895386, -0.4517742693424225, -0.7860198020935059, 1.0642484426498413],
-         [0.0, 0.0, 0.0, 1.0]]),
+        [[0.9058, -0.2462, -0.3448, -0.0859], [-0.0377, -0.8575, 0.5131, 0.1364],
+         [-0.4220, -0.4518, -0.7860, 1.0642], [0.0000, 0.0000, 0.0000, 1.0000]]),
     image_height: int = 1604,
     image_width: int = 1100,
-    background_color: Float[torch.Tensor, '3'] = torch.tensor([0.5, 0.5, 0.5]),
+    background_color: Float[torch.Tensor, '3'] = torch.tensor([0.0, 0.0, 0.0]),
+    use_se3: bool = True,
 ) -> Int[np.ndarray, 'time h w 3']:
     """
     Renders a video from flame parameters.
@@ -247,7 +255,7 @@ def render_video(
             cur_sh_degree=None,
             se3_transform=UnbatchedSE3Transform(
                 rotation=se_3_transforms.rotation[i].cuda(),
-                translation=se_3_transforms.translation[i].cuda()),
+                translation=se_3_transforms.translation[i].cuda()) if use_se3 else None,
             background=background_color.cuda(),
             camera_indices=None,
             flame_params=UnbatchedFlameParams(
@@ -264,10 +272,10 @@ def render_video(
         video[i] = frame
 
     # Pad the video
-    # if padding_mode == 'output':
-    #     left_padding = video[0][None, :].repeat((window_size // 2, 1, 1, 1))
-    #     right_padding = video[-1][None, :].repeat((window_size // 2, 1, 1, 1))
-    #     video = np.concatenate([left_padding, video, right_padding], axis=0)
+    if padding_mode == 'output':
+        left_padding = repeat(video[0], 'h w c -> p h w c', p=window_size // 2 * 2)
+        right_padding = repeat(video[-1], 'h w c -> p h w c', p=window_size // 2 * 2)
+        video = np.concatenate([left_padding, video, right_padding], axis=0)
 
     return video
 
@@ -275,15 +283,30 @@ def render_video(
 def main(
     audio_path: str,
     gaussian_splats_checkpoint_path: str,
-    output_path: str | None = None,
-    audio_to_flame_checkpoint_path: str | None = None,
-    load_flame_from_sequence: int | None = None,
-    predict_flame_from_audio: bool = True,
+    output_path: str | None,
+    audio_to_flame_checkpoint_path: str | None,
+    load_flame_from_sequence: int | None,
+    predict_flame_from_audio: bool,
+    quicktime_compatible: bool,
 ) -> None:
+    """
+    Renders a video from audio.
+
+    Args:
+        audio_path (str): Path to the audio file.
+        gaussian_splats_checkpoint_path (str): Path to the Gaussian splatting model checkpoint.
+        output_path (str): Path to save the output video.
+        audio_to_flame_checkpoint_path (str): Path to the audio-to-flame model checkpoint.
+        load_flame_from_sequence (int): Load flame parameters from a sequence.
+        predict_flame_from_audio (bool): Predict flame parameters from audio.
+        quicktime_compatible (bool): Whether to make the video compatible with QuickTime.
+    """
 
     # Set up
     audio_features = process_audio(audio_path)
     if predict_flame_from_audio:
+        assert audio_to_flame_checkpoint_path is not None, \
+            'audio_to_flame_checkpoint_path is required'
         expressions, jaws = audio_to_flame(audio_features, audio_to_flame_checkpoint_path)
     else:
         expressions, jaws = load_flame_parameters(load_flame_from_sequence)
@@ -306,24 +329,28 @@ def main(
         padding_mode='output',
     )
 
-    # save video as numpy array to tmp/video.npy
+    # save video as numpy array to tmp/video.npy for debugging purposes only
     np.save('tmp/video.npy', video)
 
     # Save video
-    if output_path is None:
-        name = 'video_pred.mp4' if predict_flame_from_audio else 'video_gt.mp4'
-        output_path = f'tmp/{name}'
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(
-        filename=str(output_path),
-        fourcc=fourcc,
-        fps=30.0,
-        frameSize=(video.shape[1], video.shape[2]))
-    for frame in tqdm(video, desc="Saving video"):
-        out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    # TODO: make the naming scheme better
+    name = 'video_pred.mp4' if predict_flame_from_audio else 'video_gt.mp4'
+    output_path = f'tmp/{name}'
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, 30, (video.shape[2], video.shape[1]))
+    for frame in video:
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        out.write(frame_bgr)
+
+    # Release the video writer
     out.release()
 
-    # add_audio(video_path=output_path, audio_path=audio_path, fps=30)
+    add_audio(
+        video_path=output_path,
+        audio_path=audio_path,
+        fps=30,
+        quicktime_compatible=quicktime_compatible,
+    )
 
 
 # ==================================================================================== #
@@ -331,36 +358,72 @@ def main(
 # ==================================================================================== #
 
 if __name__ == '__main__':
+    # hacky manual defaults
+    # audio_path = 'tmp/audio_recording_cleaned_s3.ogg'
+    audio_path = 'tmp/test.m4a'
+    gs_checkpoint = 'tb_logs/video/direct_pred/version_2/checkpoints/epoch=38-step=99000.ckpt'
+    af_checkpoint = 'tb_logs/audio2flame/my_model/version_6/checkpoints/epoch=29-step=10650.ckpt'
+
+    output_path = 'tmp/video.mp4'
+    load_sequence = 3
+    load_gt = False
+    quicktime_compatible = False
+
+    # cli overrides
     parser = argparse.ArgumentParser(description='Render a video from audio.')
     parser.add_argument('-a', '--audio_path', type=str, help='Path to the audio file.')
     parser.add_argument(
         '-gs',
-        '--gaussian_splats_checkpoint_path',
+        '--gaussian_splats',
         type=str,
         help='Path to the Gaussian splatting model checkpoint.')
+    parser.add_argument(
+        '-af', '--audio_to_flame', type=str, help='Path to the audio-to-flame model checkpoint.')
     parser.add_argument('-o', '--output_path', type=str, help='Path to save the output video.')
     parser.add_argument(
-        '-af',
-        '--audio_to_flame_checkpoint_path',
-        type=str,
-        help='Path to the audio-to-flame model checkpoint.')
-    parser.add_argument(
-        '-s',
-        '--load_flame_from_sequence',
-        type=int,
-        help='Load flame parameters from a sequence.')
+        '-s', '--load_sequence', type=int, help='Load flame parameters from a sequence.')
     parser.add_argument(
         '-gt',
         '--load_ground_truth',
         action='store_true',
         help='Load ground truth flame parameters instead of predicting them from audio.')
+    parser.add_argument(
+        '-qc',
+        '--quicktime_compatible',
+        action='store_true',
+        help='Make the video compatible with QuickTime.')
     args = parser.parse_args()
 
+    if args.audio_path:
+        audio_path = args.audio_path
+    if args.gaussian_splats:
+        gs_checkpoint = args.gaussian_splats
+    if args.audio_to_flame:
+        af_checkpoint = args.audio_to_flame
+    if args.output_path:
+        output_path = args.output_path
+    if args.load_sequence:
+        load_sequence = args.load_sequence
+    if args.load_ground_truth:
+        load_gt = True
+    if args.quicktime_compatible:
+        quicktime_compatible = True
+
+    # pretty print the arguments
+    print(f'audio_path: {audio_path}')
+    print(f'gs_checkpoint: {gs_checkpoint}')
+    print(f'audio_to_flame_checkpoint: {af_checkpoint}')
+    print(f'output_path: {output_path}')
+    print(f'load_sequence: {load_sequence}')
+    print(f'load_ground_truth: {load_gt}')
+    print(f'quicktime_compatible: {quicktime_compatible}')
+
     main(
-        audio_path=args.audio_path,
-        gaussian_splats_checkpoint_path=args.gaussian_splats_checkpoint_path,
-        output_path=args.output_path,
-        audio_to_flame_checkpoint_path=args.audio_to_flame_checkpoint_path,
-        load_flame_from_sequence=args.load_flame_from_sequence,
-        predict_flame_from_audio=not args.load_ground_truth,
+        audio_path=audio_path,
+        gaussian_splats_checkpoint_path=gs_checkpoint,
+        output_path=output_path,
+        audio_to_flame_checkpoint_path=af_checkpoint,
+        load_flame_from_sequence=load_sequence,
+        predict_flame_from_audio=not load_gt,
+        quicktime_compatible=quicktime_compatible,
     )

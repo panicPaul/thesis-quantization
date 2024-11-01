@@ -34,7 +34,11 @@ from thesis.constants import (
     TRAIN_CAMS,
     TRAIN_SEQUENCES,
 )
-from thesis.data_management import MultiSequenceDataset, UnbatchedFlameParams
+from thesis.data_management import (
+    MultiSequenceDataset,
+    SequenceManager,
+    UnbatchedFlameParams,
+)
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
 from thesis.deformation_field.barycentric_weighting import (
     apply_barycentric_weights,
@@ -337,7 +341,13 @@ class GaussianSplattingVideo(pl.LightningModule):
         optimizer_list = list(splat_optimizers.values()) + list(other_optimizers.values())
         self.splat_optimizer_keys = list(splat_optimizers.keys())
         scheduler_list = list(schedulers.values())
+        self.n_optimizers = len(optimizer_list)
         return optimizer_list, scheduler_list
+
+    @property
+    def step(self) -> int:
+        """Returns the current step."""
+        return self.global_step // self.n_optimizers
 
     # ================================================================================ #
     #                                 Rasterization                                    #
@@ -580,6 +590,13 @@ class GaussianSplattingVideo(pl.LightningModule):
             rotation=DEFAULT_SE3_ROTATION.unsqueeze(0).cuda(),
             translation=DEFAULT_SE3_TRANSLATION.unsqueeze(0).cuda(),
         )
+        if hasattr(self, "render_flame_params"):
+            flame_params = UnbatchedFlameParams(
+                *(a[time_step:time_step
+                    + self.gaussian_splatting_settings.prior_window_size].to('cuda')
+                  for a in self.render_flame_params))
+        else:
+            flame_params = self._canonical_flame_params
         image, _, depth, _ = self.forward(
             intrinsics=intrinsics,
             world_2_cam=None,
@@ -587,7 +604,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             image_height=image_height,
             image_width=image_width,
             se3_transform=se3,
-            flame_params=self._canonical_flame_params,
+            flame_params=flame_params,
         )
 
         if render_mode == 'color':
@@ -890,7 +907,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             image_height=int(frame.image.shape[1]),
             image_width=int(frame.image.shape[2]),
             color_correction=frame.color_correction,
-            cur_sh_degree=self.get_cur_sh_degree(self.global_step),
+            cur_sh_degree=self.get_cur_sh_degree(self.step),
             se3_transform=frame.se3_transform,
             camera_indices=frame.camera_indices,
             audio_features=audio_features,
@@ -902,7 +919,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             params=self.splats,
             optimizers=splat_optimizers,
             state=self.strategy_state,
-            step=self.global_step,
+            step=self.step,
             info=infos,
         )
 
@@ -941,7 +958,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                     params=self.splats,
                     optimizers=splat_optimizers,
                     state=self.strategy_state,
-                    step=self.global_step,
+                    step=self.step,
                     info=infos,
                 )
             case "monte_carlo_markov_chain":
@@ -949,7 +966,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                     params=self.splats,
                     optimizers=splat_optimizers,
                     state=self.strategy_state,
-                    step=self.global_step,
+                    step=self.step,
                     info=infos,
                     lr=schedulers.get_last_lr()[0],
                 )
@@ -958,7 +975,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                                  f"{self.gaussian_splatting_settings.densification_mode}")
 
         # Log images
-        if self.global_step % self.gaussian_splatting_settings.log_images_interval == 0:
+        if self.step % self.gaussian_splatting_settings.log_images_interval == 0:
             # denoised images
             canvas = (
                 torch.concatenate(
@@ -967,7 +984,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                 ).detach().cpu().numpy())
             canvas = (canvas * 255).astype(np.uint8)
             writer = self.logger.experiment
-            writer.add_image("train/denoised_render", canvas, self.global_step, dataformats="HWC")
+            writer.add_image("train/denoised_render", canvas, self.step, dataformats="HWC")
             # raw render
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
                 canvas = (
@@ -976,7 +993,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                         dim=1,
                     ).detach().cpu().numpy())
                 canvas = (canvas * 255).astype(np.uint8)
-                writer.add_image("train/raw_render", canvas, self.global_step, dataformats="HWC")
+                writer.add_image("train/raw_render", canvas, self.step, dataformats="HWC")
 
         # Iteration time logging
         time_elapsed = time.time() - t
@@ -995,7 +1012,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             # Update the viewer state.
             self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
             # Update the scene.
-            self.viewer.update(self.global_step, num_train_rays_per_step)
+            self.viewer.update(self.step, num_train_rays_per_step)
 
         return loss
 
@@ -1054,7 +1071,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                 ).detach().cpu().numpy())
             canvas = (canvas * 255).astype(np.uint8)
             writer = self.logger.experiment
-            writer.add_image("val/denoised_render", canvas, self.global_step, dataformats="HWC")
+            writer.add_image("val/denoised_render", canvas, self.step, dataformats="HWC")
             # Log raw renders
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
                 canvas = (
@@ -1063,7 +1080,7 @@ class GaussianSplattingVideo(pl.LightningModule):
                         dim=1,
                     ).detach().cpu().numpy())
                 canvas = (canvas * 255).astype(np.uint8)
-                writer.add_image("val/raw_render", canvas, self.global_step, dataformats="HWC")
+                writer.add_image("val/raw_render", canvas, self.step, dataformats="HWC")
 
         # Resume the viewer if needed
         if self.enable_viewer:
@@ -1075,7 +1092,7 @@ class GaussianSplattingVideo(pl.LightningModule):
             # Update the viewer state.
             self.viewer.state.num_train_rays_per_sec = num_train_rays_per_sec
             # Update the scene.
-            self.viewer.update(self.global_step, num_train_rays_per_step)
+            self.viewer.update(self.step, num_train_rays_per_step)
 
         return loss
 
@@ -1097,11 +1114,14 @@ class GaussianSplattingVideo(pl.LightningModule):
             port = find_free_port()
         self.server = viser.ViserServer(port=port, verbose=True)
         self.eval()
+        num_frames = 1 if not hasattr(
+            self, "render_flame_params") else self.render_flame_params.expr.shape[
+                0] - self.gaussian_splatting_settings.prior_window_size
         self.viewer = nerfview.Viewer(
             server=self.server,
             render_fn=self.render,
             mode=mode,
-            num_frames=1,
+            num_frames=num_frames,
         )
 
 
@@ -1129,6 +1149,8 @@ def train(config_path: str) -> None:
         print("Done.")
 
     torch.set_float32_matmul_precision('high')
+
+    #
 
     # sanity check
     params = model.splats
@@ -1165,6 +1187,13 @@ def train(config_path: str) -> None:
         persistent_workers=True,
     )
 
+    # add flame params to viewer
+    if config.enable_viewer:  # TODO: maybe it needs its own flag?
+        sm = SequenceManager(100)
+        flame_params = sm.flame_params[:]
+        flame_params = UnbatchedFlameParams(*(a.to('cuda') for a in flame_params))
+        model.render_flame_params = flame_params
+
     # start viewer
     model.cuda()
     if config.enable_viewer:
@@ -1174,7 +1203,8 @@ def train(config_path: str) -> None:
     logger = TensorBoardLogger("tb_logs/video", name=config.name)
     trainer = pl.Trainer(
         logger=logger,
-        max_steps=config.gaussian_splatting_settings.train_iterations,
+        max_epochs=None,
+        max_steps=config.gaussian_splatting_settings.train_iterations * model.n_optimizers,
         limit_val_batches=25,
         val_check_interval=500,
         check_val_every_n_epoch=None,
@@ -1198,8 +1228,12 @@ if __name__ == "__main__":
         "-v", "--visualize", type=str, help="Path to checkpoint file to visualize.")
     args = parser.parse_args()
     if args.visualize:
+        sm = SequenceManager(100)
+        flame_params = sm.flame_params[:]
+        flame_params = UnbatchedFlameParams(*(a.to('cuda') for a in flame_params))
         model = GaussianSplattingVideo.load_from_checkpoint(
             args.visualize, ckpt_path=args.visualize)
+        model.render_flame_params = flame_params
         model.cuda()
         print("Starting viewer...")
         model.start_viewer(mode='rendering')
@@ -1207,5 +1241,9 @@ if __name__ == "__main__":
         time.sleep(100000)
 
     else:
+        if args.config is not None:
+            if not (args.config.endswith(".yml") or args.config.endswith(".yaml")):
+                args.config = f'configs/{args.config}.yml'
+        print("Using config file:", args.config)
         train(args.config)
         print("Starting training...")

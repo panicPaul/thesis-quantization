@@ -11,19 +11,16 @@ per_gaussian_feature -> flame_vertices
 
 color correction is fucking things up for some reason. (maybe inverted?)
 
+- [ ] PADDING MISMATCH IN VIDEO GENERATION
+
 
 s03, t94 has eyes half closed
 # To Do's:
 - [ ] debug the KNN and flame deformation
 
 
-- [ ] dataset that supports flame, audio windowing but not image
-- [ ] video training
-- [ ] new deformation field
 
 
-
-- [ ] video sequence training
 - [ ] use per gaussian classification (do I actually need that tho?)
 - [ ] nerfview toggle to enable/ disable the classes
 

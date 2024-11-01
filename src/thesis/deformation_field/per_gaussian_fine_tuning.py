@@ -15,15 +15,24 @@ class PerGaussianFineTuning(nn.Module):
         window_size: int,
         audio_latent_dim: int,
         per_gaussian_latent_dim: int,
+        translation_scaling: float = 1e-4,
+        rotation_scaling: float = 1e-2,
     ) -> None:
         """
         Args:
             use_audio (bool): Whether to use audio features.
             use_motion_history (bool): Whether to use motion history features.
+            window_size (int): The size of the motion history window.
+            audio_latent_dim (int): The dimension of the audio latent representation.
+            per_gaussian_latent_dim (int): The dimension of the per gaussian latent representation.
+            translation_scaling (float): The scaling factor for the translation.
+            rotation_scaling (float): The scaling factor for the rotation.
         """
         super().__init__()
         self.use_audio = use_audio
         self.use_motion_history = use_motion_history
+        self.translation_scaling = translation_scaling
+        self.rotation_scaling = rotation_scaling
 
         input_dim = per_gaussian_latent_dim
         if use_audio:
@@ -69,8 +78,8 @@ class PerGaussianFineTuning(nn.Module):
             x = torch.cat([x, motion_history], dim=-1)
 
         x = self.mlp(x)
-        translation = x[:, :3] * 1e-4
-        rotation = x[:, 3:] * 1e-2
+        translation = x[:, :3] * self.translation_scaling
+        rotation = x[:, 3:] * self.rotation_scaling
         rotation = torch.nn.functional.normalize(rotation, p=2, dim=-1)
 
         return rotation, translation
