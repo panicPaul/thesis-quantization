@@ -353,85 +353,51 @@ class GaussianSplattingVideo(pl.LightningModule):
     #                                 Rasterization                                    #
     # ================================================================================ #
 
-    def forward(
+    def pre_processing(
         self,
-        intrinsics: Float[torch.Tensor, "cam 3 3"],
-        world_2_cam: Float[torch.Tensor, "cam 4 4"] | None,
-        cam_2_world: Float[torch.Tensor, "cam 4 4"] | None,
-        image_height: int,
-        image_width: int,
-        color_correction: Float[torch.Tensor, "cam 3 3"] | None = None,
+        infos: dict,
+        cam_2_world: Float[torch.Tensor, "cam 4 4"],
+        camera_indices: Int[torch.Tensor, "cam"] | None = None,
         cur_sh_degree: int | None = None,
         se3_transform: UnbatchedSE3Transform | None = None,
-        background: Float[torch.Tensor, "3"] | None = None,
-        camera_indices: Int[torch.Tensor, "cam"] | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
     ) -> tuple[
-            Float[torch.Tensor, "cam H W 3"],
-            Float[torch.Tensor, "cam H W 1"],
-            Float[torch.Tensor, "cam H W 1"],
+            Float[torch.Tensor, "n_gaussians 3"],
+            Float[torch.Tensor, "n_gaussians 4"],
+            Float[torch.Tensor, "n_gaussians 3"],
+            Float[torch.Tensor, "n_gaussians"],
+            Float[torch.Tensor, "cam n_gaussians 3"],
             dict,
     ]:
         """
+        Pre-processing step for the rasterization.
+
         Args:
-            intrinsics (torch.Tensor): Camera intrinsic, shape: `(cam, 3, 3)`.
-            world_2_cam (torch.Tensor): World to camera transformation, shape: `(cam, 4, 4)`.
-            image_height (int): Image height.
-            image_width (int): Image width.
-            color_correction (torch.Tensor): Color correction matrix, shape: `(cam, 3, 3)`.
+            infos (dict): Dictionary to store additional information.
+            cam_2_world (torch.Tensor): Camera to world transformation, shape: `(cam, 4, 4)`.
+            camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
+                color correction matrix. Shape: `(cam,)`.
             cur_sh_degree (int): Current spherical harmonic degree. If `None`, the maximum
                 degree is used.
             se3_transform (torch.Tensor): SE3 transform matrix, shape: `(cam, 4, 4)`. If
                 `None`, no transformation is applied.
-            background (torch.Tensor): Background color, shape: `(3, )`. If `None`,
-                the default background is used.
-            camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
-                color correction matrix. Shape: `(cam,)`.
             flame_params (torch.Tensor): Windowed flame parameters.
             audio_features (torch.Tensor): Windowed audio features. Shape:
                 `(cam, window_size, 1024)`.
 
         Returns:
             tuple: A tuple containing
-                - (*torch.Tensor*): RGB images, shape: `(cam, H, W, 3)`.
-                - (*torch.Tensor*): Alphas, shape: `(cam, H, W, 1)`.
-                - (*torch.Tensor*): Depth maps, shape: `(cam, H, W, 1)`.
+                - (*torch.Tensor*): Means, shape: `(n_gaussians, 3)`.
+                - (*torch.Tensor*): Quaternions, shape: `(n_gaussians, 4)`.
+                - (*torch.Tensor*): Scales, shape: `(n_gaussians, 3)`.
+                - (*torch.Tensor*): Opacities, shape: `(n_gaussians, 1)`.
+                - (*torch.Tensor*): Colors, shape: `(n_gaussians, 3)`.
                 - (*dict*): Infos, a dictionary containing additional information.
         """
-
-        # Set up
-        if cur_sh_degree is None:
-            cur_sh_degree = self.max_sh_degree
         means = self.splats["means"]
         quats = self.splats["quats"]
         features = self.splats["features"]
-        if background is None:
-            background = self.default_background
-            background.to(means.device)
-        infos = {}
-        infos = {"background": background}
-        assert (world_2_cam is None or cam_2_world is None) \
-             and (world_2_cam is not None or cam_2_world is not None), \
-                'Either world_2_cam or cam_2_world should be provided'  # noqa E711
-        if world_2_cam is not None:
-            cam_2_world = torch.zeros_like(world_2_cam)
-            cam_2_world[..., :3, :3] = world_2_cam[..., :3, :3].transpose(-2, -1)
-            cam_2_world[..., :3, 3] = -torch.bmm(
-                world_2_cam[..., :3, :3].transpose(-2, -1),
-                world_2_cam[..., :3, 3].unsqueeze(-1),
-            ).squeeze(-1)
-            cam_2_world[..., 3, 3] = 1
-        else:
-            world_2_cam = torch.zeros_like(cam_2_world)
-            world_2_cam[..., :3, :3] = cam_2_world[..., :3, :3].transpose(-2, -1)
-            world_2_cam[..., :3, 3] = -torch.bmm(
-                cam_2_world[..., :3, :3].transpose(-2, -1),
-                cam_2_world[..., :3, 3].unsqueeze(-1),
-            ).squeeze(-1)
-            world_2_cam[..., 3, 3] = 1
-
-        # ------------------------------- Pre-processing ------------------------------ #
         # quantization
         # TODO: implement quantization for flame and audio
 
@@ -499,6 +465,100 @@ class GaussianSplattingVideo(pl.LightningModule):
             colors = colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)
         scales = torch.exp(self.splats["scales"])
         opacities = torch.sigmoid(self.splats["opacities"])
+
+        return means, quats, scales, opacities, colors, infos
+
+    def forward(
+        self,
+        intrinsics: Float[torch.Tensor, "cam 3 3"],
+        world_2_cam: Float[torch.Tensor, "cam 4 4"] | None,
+        cam_2_world: Float[torch.Tensor, "cam 4 4"] | None,
+        image_height: int,
+        image_width: int,
+        color_correction: Float[torch.Tensor, "cam 3 3"] | None = None,
+        cur_sh_degree: int | None = None,
+        se3_transform: UnbatchedSE3Transform | None = None,
+        background: Float[torch.Tensor, "3"] | None = None,
+        camera_indices: Int[torch.Tensor, "cam"] | None = None,
+        flame_params: UnbatchedFlameParams | None = None,
+        audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
+        means_overwrite: Float[torch.Tensor, "n_gaussians 3"] | None = None,
+    ) -> tuple[
+            Float[torch.Tensor, "cam H W 3"],
+            Float[torch.Tensor, "cam H W 1"],
+            Float[torch.Tensor, "cam H W 1"],
+            dict,
+    ]:
+        """
+        Args:
+            intrinsics (torch.Tensor): Camera intrinsic, shape: `(cam, 3, 3)`.
+            world_2_cam (torch.Tensor): World to camera transformation, shape: `(cam, 4, 4)`.
+            image_height (int): Image height.
+            image_width (int): Image width.
+            color_correction (torch.Tensor): Color correction matrix, shape: `(cam, 3, 3)`.
+            cur_sh_degree (int): Current spherical harmonic degree. If `None`, the maximum
+                degree is used.
+            se3_transform (torch.Tensor): SE3 transform matrix, shape: `(cam, 4, 4)`. If
+                `None`, no transformation is applied.
+            background (torch.Tensor): Background color, shape: `(3, )`. If `None`,
+                the default background is used.
+            camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
+                color correction matrix. Shape: `(cam,)`.
+            flame_params (torch.Tensor): Windowed flame parameters.
+            audio_features (torch.Tensor): Windowed audio features. Shape:
+                `(cam, window_size, 1024)`.
+            means_overwrite (torch.Tensor): Overwrite the means with this tensor. Useful for
+                smoothing the means. Shape: `(n_gaussians, 3)`.
+
+        Returns:
+            tuple: A tuple containing
+                - (*torch.Tensor*): RGB images, shape: `(cam, H, W, 3)`.
+                - (*torch.Tensor*): Alphas, shape: `(cam, H, W, 1)`.
+                - (*torch.Tensor*): Depth maps, shape: `(cam, H, W, 1)`.
+                - (*dict*): Infos, a dictionary containing additional information.
+        """
+
+        # Set up
+        if cur_sh_degree is None:
+            cur_sh_degree = self.max_sh_degree
+
+        if background is None:
+            background = self.default_background
+            background.to(self.splats['means'].device)
+        infos = {}
+        infos = {"background": background}
+        assert (world_2_cam is None or cam_2_world is None) \
+             and (world_2_cam is not None or cam_2_world is not None), \
+                'Either world_2_cam or cam_2_world should be provided'  # noqa E711
+        if world_2_cam is not None:
+            cam_2_world = torch.zeros_like(world_2_cam)
+            cam_2_world[..., :3, :3] = world_2_cam[..., :3, :3].transpose(-2, -1)
+            cam_2_world[..., :3, 3] = -torch.bmm(
+                world_2_cam[..., :3, :3].transpose(-2, -1),
+                world_2_cam[..., :3, 3].unsqueeze(-1),
+            ).squeeze(-1)
+            cam_2_world[..., 3, 3] = 1
+        else:
+            world_2_cam = torch.zeros_like(cam_2_world)
+            world_2_cam[..., :3, :3] = cam_2_world[..., :3, :3].transpose(-2, -1)
+            world_2_cam[..., :3, 3] = -torch.bmm(
+                cam_2_world[..., :3, :3].transpose(-2, -1),
+                cam_2_world[..., :3, 3].unsqueeze(-1),
+            ).squeeze(-1)
+            world_2_cam[..., 3, 3] = 1
+
+        # ------------------------------- Pre-processing ------------------------------ #
+        means, quats, scales, opacities, colors, infos = self.pre_processing(
+            infos=infos,
+            cam_2_world=cam_2_world,
+            camera_indices=camera_indices,
+            cur_sh_degree=cur_sh_degree,
+            se3_transform=se3_transform,
+            flame_params=flame_params,
+            audio_features=audio_features,
+        )
+        if means_overwrite is not None:
+            means = means_overwrite
 
         # ------------------------------- Rasterization ------------------------------- #
         ret = self.rasterize(

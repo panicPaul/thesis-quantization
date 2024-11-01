@@ -15,6 +15,7 @@ def add_audio(
     audio_path: str,
     fps: int = 30,
     quicktime_compatible: bool = False,
+    trim_to_fit: bool = False,
 ) -> None:
     """
     Add audio to a video file, overwriting the original file.
@@ -25,6 +26,7 @@ def add_audio(
         audio_array (np.ndarray): Audio array
         fps (int): Frames per second of the video
         quicktime_compatible (bool): Whether to make the video compatible with QuickTime
+        trim_to_fit (bool): Whether to trim the audio to fit the video duration
     """
 
     # Load the audio
@@ -32,9 +34,9 @@ def add_audio(
     if file_format == "m4a":
         # for macbook recordings
         audio = pydub.AudioSegment.from_file(audio_path)
-        audio_array, _ = pydub_to_np(audio)
+        audio_array, sr = pydub_to_np(audio)
     else:
-        audio_array, _ = sf.read(audio_path)
+        audio_array, sr = sf.read(audio_path)
 
     # Create a temporary file to store the audio
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
@@ -45,8 +47,17 @@ def add_audio(
         video_duration = video.duration
 
         # Calculate the audio sampling rate
-        num_audio_samples = len(audio_array)
-        inferred_sample_rate = int(num_audio_samples / video_duration)
+        if not trim_to_fit:
+            num_audio_samples = len(audio_array)
+            inferred_sample_rate = int(num_audio_samples / video_duration)
+        else:
+            inferred_sample_rate = sr
+            audio_duration = len(audio_array) / sr
+            assert audio_duration >= video_duration, "Audio is shorter than video"
+            trim_length = int(video_duration * sr)
+            left_trim = (len(audio_array) - trim_length) // 2
+            right_trim = len(audio_array) - left_trim
+            audio_array = audio_array[left_trim:right_trim]
 
         # Write the audio to the temporary file
         sf.write(temp_audio_path, audio_array, inferred_sample_rate)

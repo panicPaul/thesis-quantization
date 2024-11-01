@@ -133,23 +133,32 @@ class AudioToFlame(pl.LightningModule):
 # ==================================================================================== #
 
 
-def prediction_loop(model_path: str,
-                    input_path: str,
-                    batch_size: int = 64,
-                    fps: int = 30,
-                    device: torch.device | str = 'cuda') -> UnbatchedFlameParams:
+def prediction_loop(
+    model_path: str,
+    input_path: str | None = None,
+    audio_features: Float[torch.Tensor, 'time 1024'] | None = None,
+    batch_size: int = 64,
+    fps: int = 30,
+    device: torch.device | str = 'cuda',
+    padding: bool = True,
+) -> UnbatchedFlameParams:
     """
     Takes an audio file and returns the flame parameters for the sequence.
 
     Args:
         model: The trained model.
-        input_path: The path to the audio file.
+        input_path: The path to the audio file. Mutually exclusive with audio_features.
+        audio_features: The audio features to process. Mutually exclusive with input_path.
         batch_size: Number of windows to process at once.
         device: Device to run inference on.
+        padding: Whether to pad the flame parameters to match the length of the audio.
 
     Returns:
         The flame parameters for the sequence, padded to fit the length of the audio.
     """
+    assert (input_path
+            is None) != (audio_features
+                         is None), "Either input_path or audio_features must be provided."
     # Load model
     print("Loading model... ", end="")
     model = AudioToFlame.load_from_checkpoint(model_path)
@@ -157,34 +166,38 @@ def prediction_loop(model_path: str,
     model.to(device)
     print("\t\tDone!")
 
-    # Get audio model
-    print("Loading audio model...", end="")
-    processor, wav2vec_model = get_processor_and_model()
-    wav2vec_model = wav2vec_model.to(device)
-    print("\t\tDone!")
+    if input_path is not None:
+        # Get audio model
+        print("Loading audio model...", end="")
+        processor, wav2vec_model = get_processor_and_model()
+        wav2vec_model = wav2vec_model.to(device)
+        print("\t\tDone!")
 
-    # Process audio features
-    print("Processing audio features...", end="")
-    file_format = input_path.split(".")[-1]
-    if file_format == "m4a":
-        # for macbook recordings
-        audio = pydub.AudioSegment.from_file(input_path)
-        audio, sr = pydub_to_np(audio)
+        # Process audio features
+        print("Processing audio features...", end="")
+        file_format = input_path.split(".")[-1]
+        if file_format == "m4a":
+            # for macbook recordings
+            audio = pydub.AudioSegment.from_file(input_path)
+            audio, sr = pydub_to_np(audio)
+        else:
+            audio, sr = sf.read(input_path)
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=16_000)
+        sr = 16_000
+        audio_length = len(audio) / sr  # in seconds
+        n_frames = int(audio_length * fps)
+        audio_features = process_sequence_interpolation(
+            audio=audio,
+            sampling_rate=sr,
+            n_frames=n_frames,
+            processor=processor,
+            model=wav2vec_model,
+            device=device,
+        )
+        print("\tDone!")
     else:
-        audio, sr = sf.read(input_path)
-    audio = librosa.resample(audio, orig_sr=sr, target_sr=16_000)
-    sr = 16_000
-    audio_length = len(audio) / sr  # in seconds
-    n_frames = int(audio_length * fps)
-    audio_features = process_sequence_interpolation(
-        audio=audio,
-        sampling_rate=sr,
-        n_frames=n_frames,
-        processor=processor,
-        model=wav2vec_model,
-        device=device,
-    )
-    print("\tDone!")
+        assert isinstance(audio_features, torch.Tensor)
+        n_frames = audio_features.shape[0]
 
     # Setup sliding windows
     window_size = model.window_size
@@ -217,21 +230,25 @@ def prediction_loop(model_path: str,
     pad_right = window_size - 1 - pad_left
 
     # Apply reflection padding to both tensors
-    reflection_mode = 'constant'
-    padded_expressions = torch.nn.functional.pad(
-        all_expressions.unsqueeze(0).unsqueeze(0),  # Add batch and channel dims
-        pad=(0, 0, pad_left, pad_right),  # (left, right, top, bottom)
-        mode=reflection_mode)[0, 0]  # Remove batch and channel dims
+    if padding:
+        reflection_mode = 'constant'
+        padded_expressions = torch.nn.functional.pad(
+            all_expressions.unsqueeze(0).unsqueeze(0),  # Add batch and channel dims
+            pad=(0, 0, pad_left, pad_right),  # (left, right, top, bottom)
+            mode=reflection_mode)[0, 0]  # Remove batch and channel dims
 
-    padded_jaw_codes = torch.nn.functional.pad(
-        all_jaw_codes.unsqueeze(0).unsqueeze(0),  # Add batch and channel dims
-        pad=(0, 0, pad_left, pad_right),  # (left, right, top, bottom)
-        mode=reflection_mode)[0, 0]  # Remove batch and channel dims
+        padded_jaw_codes = torch.nn.functional.pad(
+            all_jaw_codes.unsqueeze(0).unsqueeze(0),  # Add batch and channel dims
+            pad=(0, 0, pad_left, pad_right),  # (left, right, top, bottom)
+            mode=reflection_mode)[0, 0]  # Remove batch and channel dims
 
-    assert padded_expressions.shape[
-        0] == n_frames, f"Expected {n_frames} frames, got {padded_expressions.shape[0]}"
-    assert padded_jaw_codes.shape[
-        0] == n_frames, f"Expected {n_frames} frames, got {padded_jaw_codes.shape[0]}"
+        assert padded_expressions.shape[
+            0] == n_frames, f"Expected {n_frames} frames, got {padded_expressions.shape[0]}"
+        assert padded_jaw_codes.shape[
+            0] == n_frames, f"Expected {n_frames} frames, got {padded_jaw_codes.shape[0]}"
+    else:
+        padded_expressions = all_expressions
+        padded_jaw_codes = all_jaw_codes
 
     # Convert to flame parameters
     shape = torch.zeros(n_frames, 300, device=device)

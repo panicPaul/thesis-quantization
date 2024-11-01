@@ -11,7 +11,8 @@ per_gaussian_feature -> flame_vertices
 
 color correction is fucking things up for some reason. (maybe inverted?)
 
-- [ ] PADDING MISMATCH IN VIDEO GENERATION
+- [ ] temporal smoothing in 3d?
+- [ ] local rigidity loss!!!
 
 
 s03, t94 has eyes half closed
