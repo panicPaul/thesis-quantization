@@ -12,3 +12,5 @@ training:
   learning_rate: 3e-4
   num_train_workers: 8
   num_val_workers: 4
+
+compile: true

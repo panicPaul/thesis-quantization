@@ -82,14 +82,18 @@ def generate_flame_video(
 
 def main():
     from thesis.audio_to_flame.windowed import prediction_loop
+
+    # from thesis.audio_to_flame.windowed_quant import prediction_loop
     from thesis.data_management import SequenceManager
 
-    ckpt_path = 'tb_logs/audio2flame/my_model/version_6/checkpoints/epoch=29-step=10650.ckpt'
-    # audio_path = 'tmp/audio_recording_cleaned_s3.ogg'
-    audio_path = 'tmp/test.m4a'
+    # ckpt_path = 'tb_logs/audio2flame/my_model/version_6/checkpoints/epoch=29-step=10650.ckpt'
+    ckpt_path = 'tb_logs/audio2flame/my_model/version_25/checkpoints/epoch=24-step=8875.ckpt'
+    audio_path = 'tmp/audio_recording_cleaned_s3.ogg'
+    # ckpt_path = 'tb_logs/audio2flame/my_model/version_19/checkpoints/epoch=17-step=6390.ckpt'
+    # audio_path = 'tmp/test.m4a'
     fps = 30
 
-    if True:
+    if False:
         params = prediction_loop(ckpt_path, audio_path, fps=fps)
         generate_flame_video(params, 'tmp/flame_video.mp4', fps, audio_path)
     else:
@@ -102,7 +106,8 @@ def main():
             shape=torch.zeros((time, 300), device='cuda'),
             expr=expr,
             neck=torch.zeros((time, 3), device='cuda'),
-            jaw=jaw,
+            # jaw=jaw,
+            jaw=torch.zeros_like(jaw),
             eye=torch.zeros((time, 6), device='cuda'),
             scale=torch.ones((time, 1), device='cuda'),
         )

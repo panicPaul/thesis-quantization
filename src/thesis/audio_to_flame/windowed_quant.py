@@ -33,13 +33,13 @@ class AudioToFlame(pl.LightningModule):
 
     def __init__(
             self,
-            initial_projection: int = 128,
+            initial_projection: int = 256,
             window_size: int = 9,
-            hidden_dim: int = 128,
-            num_layers: int = 3,
+            hidden_dim: int = 256,
+            num_layers: int = 4,  # per direction
             dropout: float = 0.0,
             lr: float = 3e-4,
-            levels: list[int] = [8, 5, 5, 5],  # 1k
+            levels=[8, 5, 5, 5],  # 1k
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -54,7 +54,7 @@ class AudioToFlame(pl.LightningModule):
         self.fsq = FSQ(levels=levels, dim=hidden_dim)
         self.decoder_layers = nn.ModuleList(
             [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 1)])
-        self.output_layer = nn.Linear(hidden_dim, 103)
+        self.output_layer = nn.Linear(hidden_dim, 103 * window_size)
         self.flame_head = FlameHead()
 
     def configure_optimizers(self):
@@ -63,7 +63,7 @@ class AudioToFlame(pl.LightningModule):
     def forward(
         self,
         audio_features: Float[torch.Tensor, 'batch window 1024'],
-    ) -> tuple[Float[torch.Tensor, 'batch 100'], Float[torch.Tensor, 'batch 3']]:
+    ) -> tuple[Float[torch.Tensor, 'batch window 100'], Float[torch.Tensor, 'batch window 3']]:
         """ Returns the expression and jaw code for the middle frame of the window."""
         x = rearrange(audio_features, 'batch window d -> batch d window')
         x = self.initial_projection(x)
@@ -72,16 +72,17 @@ class AudioToFlame(pl.LightningModule):
         for layer in self.encoder_layers:
             x = nn.functional.dropout(x, p=self.dropout, training=self.training)
             x = nn.functional.silu(layer(x))
-        # x = nn.functional.sigmoid(self.output_layer(x))
-        # maybe it's nn.tanh??
+
+        x = x.unsqueeze(1)
+        # x, _ = self.fsq.forward(x)
+        x = x.squeeze(1)
 
         for layer in self.decoder_layers:
             x = nn.functional.dropout(x, p=self.dropout, training=self.training)
             x = nn.functional.silu(layer(x))
-
         x = self.output_layer(x)
-        x = nn.functional.tanh(x)
-        return x[:, :100], x[:, 100:]
+        x = rearrange(x, 'batch (d window) -> batch window d', d=103)
+        return x[:, :, :100], x[:, :, 100:]
 
     def to_flame(
         self,
@@ -89,12 +90,12 @@ class AudioToFlame(pl.LightningModule):
         jaw_code: Float[torch.Tensor, 'batch 3'],
     ) -> Float[torch.Tensor, 'batch num_vertices 3']:
         """ Returns the flame vertices for the middle frame of the window."""
-        batch_size = expression.shape[0]
-        shape = torch.zeros(batch_size, 300, device=self.device)
-        neck = torch.zeros(batch_size, 3, device=self.device)
-        eye = torch.zeros(batch_size, 6, device=self.device)
-        scale = torch.ones(batch_size, 1, device=self.device)
-        flame_params = UnbatchedFlameParams(shape, expression, neck, jaw_code, eye, scale)
+        batch_size, window_size = expression.shape[:2]
+        shape = torch.zeros(batch_size, window_size, 300, device=self.device)
+        neck = torch.zeros(batch_size, window_size, 3, device=self.device)
+        eye = torch.zeros(batch_size, window_size, 6, device=self.device)
+        scale = torch.ones(batch_size, window_size, 1, device=self.device)
+        flame_params = FlameParams(shape, expression, neck, jaw_code, eye, scale)
         return self.flame_head.forward(flame_params)
 
     def compute_loss(
@@ -105,28 +106,21 @@ class AudioToFlame(pl.LightningModule):
         """ Returns the L2 loss between the predicted flame vertices and the ground truth."""
         pred_expr, pred_jaw = self.forward(audio_features)
         pred_flame_vertices = self.to_flame(pred_expr, pred_jaw)
-        batch_size = audio_features.shape[0]
+        batch_size, window_size = audio_features.shape[:2]
         with torch.no_grad():
-            target_params = UnbatchedFlameParams(
-                shape=torch.zeros(batch_size, 300, device=self.device),
-                expr=flame_params.expr[:, self.window_size // 2],
-                neck=torch.zeros(batch_size, 3, device=self.device),
-                jaw=flame_params.jaw[:, self.window_size // 2],
-                eye=torch.zeros(batch_size, 6, device=self.device),
-                scale=torch.ones(batch_size, 1, device=self.device),
+            target_params = FlameParams(
+                shape=torch.zeros(batch_size, window_size, 300, device=self.device),
+                expr=flame_params.expr,
+                neck=torch.zeros(batch_size, window_size, 3, device=self.device),
+                jaw=flame_params.jaw,
+                eye=torch.zeros(batch_size, window_size, 6, device=self.device),
+                scale=torch.ones(batch_size, window_size, 1, device=self.device),
             )
             target_vertices = self.flame_head.forward(target_params)
-        vertex_loss = nn.functional.l1_loss(pred_flame_vertices, target_vertices)
-        expr_loss = nn.functional.l1_loss(pred_expr, flame_params.expr[:, self.window_size // 2])
-        jaw_loss = nn.functional.l1_loss(pred_jaw, flame_params.jaw[:, self.window_size // 2])
-        #loss = 1e3*vertex_loss + 0.1*expr_loss + jaw_loss
-        loss = expr_loss
-        return {
-            'loss': loss,
-            'expr_loss': expr_loss,
-            'jaw_loss': jaw_loss,
-            'vertex_loss': vertex_loss
-        }
+        loss = nn.functional.l1_loss(pred_flame_vertices, target_vertices)
+        expr_loss = nn.functional.l1_loss(pred_expr, flame_params.expr)
+        jaw_loss = nn.functional.l1_loss(pred_jaw, flame_params.jaw)
+        return {'loss': loss, 'expr_loss': expr_loss, 'jaw_loss': jaw_loss}
 
     def training_step(self, batch, batch_idx: int) -> dict[str, Float[torch.Tensor, '']]:
         flame_params, _, audio_features = batch
@@ -235,8 +229,9 @@ def prediction_loop(
                 [audio_features[i:i + window_size] for i in range(start_idx, end_idx)])
 
             # Forward pass
-            expressions, jaw_codes = model(batch_windows)
-            jaw_codes = torch.zeros_like(jaw_codes)  # TODO: remove this line
+            expressions, jaw_codes = model.forward(batch_windows)
+            expressions = expressions[:, window_size // 2]
+            jaw_codes = jaw_codes[:, window_size // 2]
 
             # Store results
             all_expressions[start_idx:end_idx] = expressions
@@ -298,6 +293,8 @@ def train_audio_to_flame(config_path: str) -> None:
         lr=config.training.learning_rate,
         **config.model,
     )
+    if config.compile:
+        model.compile()
 
     # setup data
     train_set = QuantizationDataset(
@@ -305,12 +302,16 @@ def train_audio_to_flame(config_path: str) -> None:
     train_loader = DataLoader(
         train_set,
         batch_size=config.training.batch_size,
-        num_workers=config.training.num_train_workers)
+        num_workers=config.training.num_train_workers,
+        shuffle=True,
+    )
     val_set = QuantizationDataset(sequences=TEST_SEQUENCES, window_size=config.model.window_size)
     val_loader = DataLoader(
         val_set,
         batch_size=config.training.batch_size,
-        num_workers=config.training.num_val_workers)
+        num_workers=config.training.num_val_workers,
+        shuffle=False,
+    )
 
     # setup trainer
     logger = TensorBoardLogger("tb_logs/audio2flame", name="my_model")

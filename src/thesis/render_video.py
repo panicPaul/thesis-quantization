@@ -1,6 +1,7 @@
 """ Renders a video."""
 
 import argparse
+import os
 from functools import partial
 from multiprocessing import Pool
 from typing import Literal
@@ -455,6 +456,43 @@ def render_video(
     return video
 
 
+def render_gt_video(sequence: int, camera: int = 8, output_path='tmp/gt/') -> None:
+    """
+    Renders a video from ground truth flame parameters.
+
+    Args:
+        sequence: Sequence number.
+    """
+
+    output_path = f'{output_path}sequence_{sequence}.mp4'
+    sm = SequenceManager(sequence, cameras=[camera])
+    audio_path = os.path.join(
+        sm.data_dir,
+        "sequences",
+        sm.sequence,
+        "audio",
+        "audio_recording_cleaned.ogg",
+    )
+    width = sm.image_width
+    height = sm.image_height
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, 30, (width, height))
+    for i in tqdm(range(len(sm)), desc='Rendering video'):
+        image = sm.images[i][0].numpy() * 255
+        image = image.astype(np.uint8)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        out.write(image)
+
+    out.release()
+    add_audio(
+        video_path=output_path,
+        audio_path=audio_path,
+        fps=30,
+        quicktime_compatible=False,
+        trim_to_fit=False,
+    )
+
+
 def main(
     audio_path: str,
     gaussian_splats_checkpoint_path: str,
@@ -542,17 +580,19 @@ def main(
 
 if __name__ == '__main__':
     # hacky manual defaults
-    # audio_path = 'tmp/audio_recording_cleaned_s3.ogg'
-    audio_path = 'tmp/test.m4a'
+    audio_path = 'tmp/audio_recording_cleaned_s3.ogg'
+    # audio_path = 'tmp/audio_recording_cleaned.ogg'
+    # audio_path = 'tmp/test.m4a'
     gs_checkpoint = 'tb_logs/video/direct_pred/version_2/checkpoints/epoch=38-step=99000.ckpt'
     af_checkpoint = 'tb_logs/audio2flame/my_model/version_6/checkpoints/epoch=29-step=10650.ckpt'
 
     output_path = 'tmp/video.mp4'
-    load_sequence = 3
+    load_sequence = 100
     load_gt = False
     quicktime_compatible = False
     disable_se3 = False
-    smoothing_method = 'none'
+    # smoothing_method = 'none'
+    smoothing_method = 'savgol'
 
     # cli overrides
     parser = argparse.ArgumentParser(description='Render a video from audio.')

@@ -1,3 +1,12 @@
+# Remaining Tasks
+## Audio2Flame
+- [ ] try codetalker
+
+## Rendering
+- [ ] train on only 8 or so frames and then fine tune the flame vertices on each frame to get a better motion prior
+    - copy video class
+- [ ] implement per gaussian classification
+
 # Thesis Project
 
 Flame-driven DF
@@ -11,7 +20,11 @@ per_gaussian_feature -> flame_vertices
 
 color correction is fucking things up for some reason. (maybe inverted?)
 
-- [ ] temporal smoothing in 3d?
+
+- [ ] experiment with predicting flame offsets based on audio maybe? Similar to tri plane encoding!!!!
+
+
+
 - [ ] local rigidity loss!!!
 
 

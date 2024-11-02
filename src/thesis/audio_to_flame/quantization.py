@@ -1,4 +1,4 @@
-""" Audio to flame network."""
+""" Audio to flame with quantization layer."""
 
 import argparse
 
@@ -13,7 +13,6 @@ from jaxtyping import Float
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
-from vector_quantize_pytorch import FSQ
 
 from thesis.audio_feature_processing.audio_cleaning import pydub_to_np
 from thesis.audio_feature_processing.wav2vec import (
@@ -29,17 +28,16 @@ from thesis.data_management import (
 from thesis.flame import FlameHead
 
 
-class AudioToFlame(pl.LightningModule):
+class AudioFlameToFlame(pl.LightningModule):
 
     def __init__(
-            self,
-            initial_projection: int = 128,
-            window_size: int = 9,
-            hidden_dim: int = 128,
-            num_layers: int = 3,
-            dropout: float = 0.0,
-            lr: float = 3e-4,
-            levels: list[int] = [8, 5, 5, 5],  # 1k
+        self,
+        initial_projection: int = 128,
+        window_size: int = 9,
+        hidden_dim: int = 128,
+        num_layers: int = 4,
+        dropout: float = 0.0,
+        lr: float = 3e-4,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -48,13 +46,9 @@ class AudioToFlame(pl.LightningModule):
         self.initial_projection = nn.Conv1d(1024, initial_projection, 1)
 
         self.window_size = window_size
-        input_layer = nn.Linear(initial_projection * window_size, hidden_dim)
-        self.encoder_layers = nn.ModuleList(
-            [input_layer] + [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 2)])
-        self.fsq = FSQ(levels=levels, dim=hidden_dim)
-        self.decoder_layers = nn.ModuleList(
-            [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 1)])
-        self.output_layer = nn.Linear(hidden_dim, 103)
+        audio_input_layer = nn.Linear(initial_projection * window_size, hidden_dim)
+        flame_input_layer = nn.Linear(103 * window_size, hidden_dim)
+
         self.flame_head = FlameHead()
 
     def configure_optimizers(self):
@@ -69,18 +63,13 @@ class AudioToFlame(pl.LightningModule):
         x = self.initial_projection(x)
         x = nn.functional.silu(x)
         x = rearrange(x, 'batch d window -> batch (d window)')
-        for layer in self.encoder_layers:
+        for layer in self.hidden_layers:
             x = nn.functional.dropout(x, p=self.dropout, training=self.training)
             x = nn.functional.silu(layer(x))
         # x = nn.functional.sigmoid(self.output_layer(x))
         # maybe it's nn.tanh??
 
-        for layer in self.decoder_layers:
-            x = nn.functional.dropout(x, p=self.dropout, training=self.training)
-            x = nn.functional.silu(layer(x))
-
         x = self.output_layer(x)
-        x = nn.functional.tanh(x)
         return x[:, :100], x[:, 100:]
 
     def to_flame(
@@ -116,17 +105,10 @@ class AudioToFlame(pl.LightningModule):
                 scale=torch.ones(batch_size, 1, device=self.device),
             )
             target_vertices = self.flame_head.forward(target_params)
-        vertex_loss = nn.functional.l1_loss(pred_flame_vertices, target_vertices)
+        loss = nn.functional.l1_loss(pred_flame_vertices, target_vertices)
         expr_loss = nn.functional.l1_loss(pred_expr, flame_params.expr[:, self.window_size // 2])
         jaw_loss = nn.functional.l1_loss(pred_jaw, flame_params.jaw[:, self.window_size // 2])
-        #loss = 1e3*vertex_loss + 0.1*expr_loss + jaw_loss
-        loss = expr_loss
-        return {
-            'loss': loss,
-            'expr_loss': expr_loss,
-            'jaw_loss': jaw_loss,
-            'vertex_loss': vertex_loss
-        }
+        return {'loss': loss, 'expr_loss': expr_loss, 'jaw_loss': jaw_loss}
 
     def training_step(self, batch, batch_idx: int) -> dict[str, Float[torch.Tensor, '']]:
         flame_params, _, audio_features = batch
@@ -236,7 +218,6 @@ def prediction_loop(
 
             # Forward pass
             expressions, jaw_codes = model(batch_windows)
-            jaw_codes = torch.zeros_like(jaw_codes)  # TODO: remove this line
 
             # Store results
             all_expressions[start_idx:end_idx] = expressions
