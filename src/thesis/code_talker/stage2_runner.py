@@ -1,4 +1,4 @@
-""" Running and evaluation of stage 1 model. """
+""" Runner for the audio to vertex prediction."""
 
 import argparse
 
@@ -11,11 +11,8 @@ from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 
-from thesis.code_talker.models.code_talker_config import (
-    QuantizationTrainingConfig,
-    QuantizerConfig,
-)
-from thesis.code_talker.models.stage1_nersemble import VQAutoEncoder
+from thesis.code_talker.models.code_talker_config import CodeTalkerConfig, CodeTalkerTrainingConfig
+from thesis.code_talker.models.stage2 import CodeTalker
 from thesis.constants import CANONICAL_FLAME_PARAMS, TEST_SEQUENCES, TRAIN_SEQUENCES
 from thesis.data_management import (
     FlameParams,
@@ -26,32 +23,25 @@ from thesis.flame import FlameHead
 
 
 # TODO: adapt time downsampling as well!
-class Stage1Runner(pl.LightningModule):
-    """ Training and Evaluation of Stage 1 models. """
+class Stage2Runner(pl.LightningModule):
+    """ Training and Evaluation of Stage 2 models. """
 
-    def __init__(
-        self,
-        config: QuantizerConfig,
-        training_config: QuantizationTrainingConfig,
-    ) -> None:
+    def __init__(self, config: CodeTalkerConfig,
+                 training_config: CodeTalkerTrainingConfig) -> None:
         """ Descriptions in QuantizerConfig. """
 
         super().__init__()
         self.save_hyperparameters()
-        self.model = VQAutoEncoder(*config)
+        self.model = CodeTalker(
+            *config,
+            reg_weight=training_config.reg_weight,
+            motion_weight=training_config.motion_weight,
+        )
+        self.disable_neck = self.model.disable_neck
         self.flame_head = FlameHead()
         self.config = config
         self.training_config = training_config
         canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
-        if config.disable_neck:
-            canonical_flame_params = UnbatchedFlameParams(
-                shape=canonical_flame_params.shape,
-                expr=canonical_flame_params.expr,
-                neck=torch.zeros_like(canonical_flame_params.neck),
-                jaw=canonical_flame_params.jaw,
-                eye=canonical_flame_params.eye,
-                scale=canonical_flame_params.scale,
-            )
         canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)
         canonical_flame_vertices = canonical_flame_vertices.flatten().unsqueeze(0)  # (1, v*3)
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
@@ -64,23 +54,16 @@ class Stage1Runner(pl.LightningModule):
             self.model.parameters(),
             lr=self.training_config.base_lr,
         )
-        scheduler = StepLR(
-            optimizer, step_size=self.training_config.step_size, gamma=self.training_config.gamma)
-        return [optimizer], [scheduler]
-
-    def calc_vq_loss(self, pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
-        """ function that computes the various components of the VQ loss """
-        rec_loss = nn.functional.l1_loss(pred, target)
-        ## loss is VQ reconstruction + weighted pre-computed quantization loss
-        quant_loss = quant_loss.mean()
-        return quant_loss*quant_loss_weight + rec_loss, [rec_loss, quant_loss]
+        #scheduler = StepLR(
+        #    optimizer, step_size=self.training_config.step_size, gamma=self.training_config.gamma)
+        return optimizer
 
     def training_step(self, batch, batch_idx):
         """ Training step for the model. """
         # set up
-        flame_params, _, _ = batch
+        flame_params, _, audio_features = batch
         flame_params = FlameParams(*flame_params)
-        if self.config.disable_neck:
+        if self.disable_neck:
             flame_params = FlameParams(
                 shape=flame_params.shape,
                 expr=flame_params.expr,
@@ -95,22 +78,25 @@ class Stage1Runner(pl.LightningModule):
         template = self.canonical_flame_vertices.repeat(batch_size, 1)
 
         # forward pass
-        rec, quant_loss, info = self.model.forward(flame_vertices, template)
-        loss, losses = self.calc_vq_loss(rec, flame_vertices, quant_loss)
+        loss, motion_loss, reg_loss = self.model.forward(
+            audio_features=audio_features,
+            template=template,
+            vertices=flame_vertices,
+        )
 
         # logging
         self.log('train/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log('train/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('train/motion_loss', motion_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('train/reg_loss', reg_loss, on_step=False, on_epoch=True, prog_bar=False)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         """ Validation step for the model. """
         # set up
-        flame_params, _, _ = batch
+        flame_params, _, audio_features = batch
         flame_params = FlameParams(*flame_params)
-        if self.config.disable_neck:
+        if self.disable_neck:
             flame_params = FlameParams(
                 shape=flame_params.shape,
                 expr=flame_params.expr,
@@ -119,21 +105,22 @@ class Stage1Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-        flame_vertices = self.flame_head.forward(flame_params)
-        batch_size, timesteps, num_vertices, _ = flame_vertices.shape
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        batch_size, timesteps, _, _ = flame_vertices.shape
         flame_vertices = flame_vertices.view(batch_size, timesteps, -1)
         template = self.canonical_flame_vertices.repeat(batch_size, 1)
 
         # forward pass
-        rec, quant_loss, info = self.model.forward(flame_vertices, template)
-        loss, losses = self.calc_vq_loss(rec, flame_vertices, quant_loss)
+        loss, motion_loss, reg_loss = self.model.forward(
+            audio_features=audio_features,
+            template=template,
+            vertices=flame_vertices,
+        )
 
         # logging
         self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log('val/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
-
-        return loss
+        self.log('val/motion_loss', motion_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val/reg_loss', reg_loss, on_step=False, on_epoch=True, prog_bar=False)
 
 
 # ==================================================================================== #
@@ -146,15 +133,15 @@ def train_vq_vae(config_path: str) -> None:
     torch.set_float32_matmul_precision('high')
     # load config
     config = OmegaConf.load(config_path)
-    training_config = QuantizationTrainingConfig(**config.training)
-    model_config = QuantizerConfig(**config.model)
+    model_config = CodeTalkerConfig(**config.model)
+    training_config = CodeTalkerTrainingConfig(**config.training)
     window_size = None  # NOTE: this returns the entire sequence
 
     # set up
-    model = Stage1Runner(model_config, training_config)
+    model = Stage2Runner(model_config, training_config)
     if config.compile:
         model.compile()
-    logger = TensorBoardLogger("tb_logs/vector_quantization", name=config.name)
+    logger = TensorBoardLogger("tb_logs/audio_prediction", name=config.name)
     trainer = pl.Trainer(
         max_epochs=training_config.epochs,
         logger=logger,
@@ -168,8 +155,8 @@ def train_vq_vae(config_path: str) -> None:
     )
     train_loader = DataLoader(
         train_set,
-        batch_size=training_config.batch_size,
-        num_workers=training_config.num_train_workers,
+        batch_size=1,
+        num_workers=training_config.train_workers,
         shuffle=True,
         persistent_workers=True,
     )
@@ -179,8 +166,8 @@ def train_vq_vae(config_path: str) -> None:
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=training_config.batch_size,
-        num_workers=training_config.num_val_workers,
+        batch_size=1,
+        num_workers=training_config.val_workers,
         shuffle=False,
         persistent_workers=True,
     )
@@ -195,7 +182,7 @@ if __name__ == "__main__":
         "-c",
         "--config",
         type=str,
-        default="configs/code_talker_vq_vae.yml",
+        default="configs/code_talker_prediction.yml",
         help="Path to the configuration file.")
     args = parser.parse_args()
 

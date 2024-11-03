@@ -119,7 +119,7 @@ class AudioToFlame(pl.LightningModule):
         vertex_loss = nn.functional.l1_loss(pred_flame_vertices, target_vertices)
         expr_loss = nn.functional.l1_loss(pred_expr, flame_params.expr[:, self.window_size // 2])
         jaw_loss = nn.functional.l1_loss(pred_jaw, flame_params.jaw[:, self.window_size // 2])
-        #loss = 1e3*vertex_loss + 0.1*expr_loss + jaw_loss
+        # loss = 1e3*vertex_loss + 0.1*expr_loss + jaw_loss
         loss = expr_loss
         return {
             'loss': loss,

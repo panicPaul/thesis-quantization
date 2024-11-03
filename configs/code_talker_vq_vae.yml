@@ -1,4 +1,11 @@
 # Config for the VQ-VAE model
+name: without_neck_default
 
-model: {}
-training: {}
+model:
+  quantization_mode: default
+  disable_neck: true
+
+training: 
+  epochs: 200
+
+compile: false

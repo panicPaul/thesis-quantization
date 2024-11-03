@@ -190,7 +190,7 @@ class QuantizationDataset(Dataset):
         self,
         sequences: list[int | str],
         data_dir: str = DATA_DIR_NERSEMBLE,
-        window_size: int = 16,
+        window_size: int | None = 16,
     ) -> None:
         """
         Args:
@@ -201,21 +201,28 @@ class QuantizationDataset(Dataset):
         self.msm = MultiSequenceManager(
             sequences=sequences,
             data_dir=data_dir,
-            window_size=window_size,
+            window_size=window_size if window_size is not None else 1,
         )
         self.window_size = window_size
 
     def __len__(self) -> int:
-        return len(self.msm)
+        return len(self.msm) if self.window_size is not None else len(self.msm.sequences)
 
     def __getitem__(self, idx: int):
-        sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
-        flame_params = tuple(self.msm[sequence_idx].flame_params[frame_idx:frame_idx
-                                                                 + self.window_size])
-        se3_transforms = tuple(self.msm[sequence_idx].se3_transforms[frame_idx:frame_idx
+        if self.window_size is None:
+            sequence_idx = idx
+            flame_params = tuple(self.msm[sequence_idx].flame_params[:])
+            se3_transforms = tuple(self.msm[sequence_idx].se3_transforms[:])
+            audio_features = self.msm[sequence_idx].audio_features[:]
+            return flame_params, se3_transforms, audio_features
+        else:
+            sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
+            flame_params = tuple(self.msm[sequence_idx].flame_params[frame_idx:frame_idx
                                                                      + self.window_size])
-        audio_features = self.msm[sequence_idx].audio_features[frame_idx:frame_idx
-                                                               + self.window_size]
+            se3_transforms = tuple(self.msm[sequence_idx].se3_transforms[frame_idx:frame_idx
+                                                                         + self.window_size])
+            audio_features = self.msm[sequence_idx].audio_features[frame_idx:frame_idx
+                                                                   + self.window_size]
         return flame_params, se3_transforms, audio_features
 
     @classmethod

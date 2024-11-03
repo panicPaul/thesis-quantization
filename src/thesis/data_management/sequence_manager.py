@@ -358,6 +358,7 @@ class MultiSequenceManager:
         self.lengths = []
         self.sequence_managers = []
         cnt = 0
+        self.window_size = window_size
 
         for sequence in sequences:
             sm = SequenceManager(
@@ -370,6 +371,8 @@ class MultiSequenceManager:
             self.start_indices.append(cnt)
             cnt += len(sm) - window_size + 1
             self.end_indices.append(cnt)
+            # NOTE: this allows for returning entire sequences, by setting window_size to something
+            #       larger than the sequence length.
             self.lengths.append(len(sm) - window_size + 1)
 
         self.image_width = self.sequence_managers[0].image_width
@@ -387,8 +390,8 @@ class MultiSequenceManager:
         Returns:
             (int, int): Sequence index, frame index.
         """
-        left, right = 0, len(self.start_indices) - 1
 
+        left, right = 0, len(self.start_indices) - 1
         while left <= right:
             mid = (left+right) // 2
             if self.start_indices[mid] <= idx < self.end_indices[mid]:

@@ -18,6 +18,8 @@ class QuantizerConfig(NamedTuple):
         zquant_dim (int): quanitzed embedding dimension
         face_quan_num (int): number of face components
         is_audio (bool):
+        quantization_mode (str): quantization mode
+        disable_neck (bool):
     """
     input_dim: int = 5143 * 3  # 3 * num_vertices
     hidden_size: int = 1024
@@ -32,6 +34,29 @@ class QuantizerConfig(NamedTuple):
     face_quan_num: int = 16
     is_audio: bool = False
     # window size is hardcoded to 1
+    quantization_mode: str = "default"
+    disable_neck: bool = False
+
+
+class CodeTalkerConfig(NamedTuple):
+    """
+    Also includes the training configuration, as the og code doesn't separate them here.
+    
+    Args:
+        feature_dim (int):
+        positional_encoding_period (int):
+        n_head (int):
+        num_layers (int):
+        vq_vae_pretrained_path (str):
+        reg_weight (float):
+        motion_weight (float):
+        base_lr (float):
+    """
+    feature_dim: int = 1024
+    positional_encoding_period: int = 30
+    n_head: int = 4  # doesn't seem to be actually used
+    num_layers: int = 6
+    vq_vae_pretrained_path: str = 'tb_logs/vector_quantization/default_quantization/version_0/checkpoints/epoch=199-step=15400.ckpt'  # noqa
 
 
 class QuantizationTrainingConfig(NamedTuple):
@@ -74,3 +99,25 @@ class QuantizationTrainingConfig(NamedTuple):
     power: float = 0.9
     momentum: float = 0.9
     weight_decay: float = 0.002
+    validate_every_n_steps: int = 1000
+    validate_n_samples: int = 100
+
+
+class CodeTalkerTrainingConfig(NamedTuple):
+    """
+    Configuration for the CodeTalker training.
+
+    Args:
+        reg_weight (float): Weight for the regularization loss.
+        motion_weight (float): Weight for the motion loss.
+        base_lr (float): Base learning rate.
+        epochs (int): Total number of training epochs.
+        train_workers (int): Number of workers for training data loading.
+        val_workers (int): Number of workers for validation data loading.
+    """
+    reg_weight: float = 1.0
+    motion_weight: float = 1.0
+    base_lr: float = 0.0001
+    epochs: int = 100  # interestingly only half of the epochs as the quantization training
+    train_workers: int = 10
+    val_workers: int = 4
