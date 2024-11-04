@@ -11,7 +11,10 @@ from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 
-from thesis.code_talker.models.code_talker_config import CodeTalkerConfig, CodeTalkerTrainingConfig
+from thesis.code_talker.models.code_talker_config import (
+    CodeTalkerConfig,
+    CodeTalkerTrainingConfig,
+)
 from thesis.code_talker.models.stage2 import CodeTalker
 from thesis.constants import CANONICAL_FLAME_PARAMS, TEST_SEQUENCES, TRAIN_SEQUENCES
 from thesis.data_management import (
@@ -43,7 +46,7 @@ class Stage2Runner(pl.LightningModule):
         self.training_config = training_config
         canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
         canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)
-        canonical_flame_vertices = canonical_flame_vertices.flatten().unsqueeze(0)  # (1, v*3)
+        canonical_flame_vertices = canonical_flame_vertices
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
 
     def configure_optimizers(self):
@@ -73,9 +76,8 @@ class Stage2Runner(pl.LightningModule):
                 scale=flame_params.scale,
             )
         flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-        batch_size, timesteps, _, _ = flame_vertices.shape
-        flame_vertices = flame_vertices.view(batch_size, timesteps, -1)
-        template = self.canonical_flame_vertices.repeat(batch_size, 1)
+        batch_size, _, _, _ = flame_vertices.shape
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)
 
         # forward pass
         loss, motion_loss, reg_loss = self.model.forward(
@@ -106,9 +108,8 @@ class Stage2Runner(pl.LightningModule):
                 scale=flame_params.scale,
             )
         flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-        batch_size, timesteps, _, _ = flame_vertices.shape
-        flame_vertices = flame_vertices.view(batch_size, timesteps, -1)
-        template = self.canonical_flame_vertices.repeat(batch_size, 1)
+        batch_size, _, _, _ = flame_vertices.shape
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)
 
         # forward pass
         loss, motion_loss, reg_loss = self.model.forward(
@@ -121,6 +122,12 @@ class Stage2Runner(pl.LightningModule):
         self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val/motion_loss', motion_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val/reg_loss', reg_loss, on_step=False, on_epoch=True, prog_bar=False)
+
+    def predict(self, audio_features):
+        """ Predicts the flame vertices from the audio features and template. """
+        self.eval()
+        template = self.canonical_flame_vertices
+        return self.model.predict(audio_features, template)
 
 
 # ==================================================================================== #

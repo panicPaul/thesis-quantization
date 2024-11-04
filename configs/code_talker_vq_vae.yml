@@ -5,7 +5,7 @@ model:
   quantization_mode: default
   disable_neck: true
 
-training: 
+training:
   epochs: 200
 
 compile: false

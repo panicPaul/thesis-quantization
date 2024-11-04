@@ -1,8 +1,11 @@
 """ Utilities."""
 
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from beartype import BeartypeConf, BeartypeStrategy, beartype
-from jaxtyping import Float, Int
+from jaxtyping import Float, Int, UInt8
 
 from thesis.constants import SEGMENTATION_CLASSES
 
@@ -147,3 +150,47 @@ def apply_se3_to_orientation(
     orientation = orientation / torch.norm(orientation, dim=-1, keepdim=True)
     rotation_quat = rotation_matrix_to_quaternion(rotation)
     return quaternion_multiplication(rotation_quat, orientation)
+
+
+def generate_mesh_image(
+    vertex_positions: Float[torch.Tensor, 'n_vertices 3'],
+    faces: Int[torch.Tensor, 'n_faces 3'],
+    image_height: int = 1_000,
+    image_width: int = 1_000,
+) -> UInt8[np.ndarray, "h w 3"]:
+    """
+    Generates an image of the mesh at the given time step.
+
+    Args:
+        vertex_positions: The vertex positions.
+        faces: The faces of the mesh.
+        image_height: The height of the image.
+        image_width: The width of the image.
+
+    Returns:
+        The image of the mesh.
+    """
+
+    # Generate the vertices and faces
+    vertices = vertex_positions.detach().cpu().numpy()
+    faces = faces.detach().cpu().numpy()
+
+    # Generate the matplotlib image
+    matplotlib.use('agg')
+    fig = plt.figure(figsize=(image_width / 100, image_height / 100))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot_trisurf(
+        vertices[:, 2],
+        vertices[:, 0],
+        faces,
+        vertices[:, 1],
+        shade=True,
+    )
+    ax.view_init(azim=10, elev=10)
+    ax.set_box_aspect([1, 1, 1])  # Aspect ratio is 1:1:1
+    ax.set_axis_off()
+
+    fig.canvas.draw()
+    image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    plt.close(fig)
+    return image.reshape(fig.canvas.get_width_height()[::-1] + (3,))

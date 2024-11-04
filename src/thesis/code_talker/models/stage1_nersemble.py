@@ -1,16 +1,38 @@
+from typing import Literal
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from jaxtyping import Float
+from vector_quantize_pytorch import FSQ, LFQ
 
 from thesis.code_talker.models.lib.base_models import (
     LinearEmbedding,
     PositionalEncoding,
     Transformer,
 )
-from typing import Literal
 from thesis.code_talker.models.lib.quantizer import VectorQuantizer
-from vector_quantize_pytorch import FSQ, LFQ
+
+
+class BottleNeck(nn.Module):
+    """ BottleNeck for ablation and debugging """
+
+    def __init__(self, dim: int | None = None) -> None:
+        super().__init__()
+        self.linear = nn.Linear(dim, dim) if dim is not None else nn.Identity()
+
+    def forward(
+        self, x: Float[torch.Tensor, "batch time c_in"]
+    ) -> tuple[
+            Float[torch.Tensor, "batch code_dim h"],
+            Float[torch.Tensor, ""],
+            tuple,
+    ]:
+        embedding_loss = torch.tensor(0.0, requires_grad=True)  # dummy value
+        info = ()  # empty tuple
+        x = self.linear(x)
+        x = x.permute(0, 2, 1)
+        return x
 
 
 class LFQWrapper(nn.Module):
@@ -27,7 +49,7 @@ class LFQWrapper(nn.Module):
     def forward(
         self, x: Float[torch.Tensor, "batch time c_in"]
     ) -> tuple[
-            Float[torch.Tensor, "batch c_quant h"],
+            Float[torch.Tensor, "batch code_dim h"],
             Float[torch.Tensor, ""],
             tuple,
     ]:
@@ -58,7 +80,7 @@ class FSQWrapper(nn.Module):
     def forward(
         self, x: Float[torch.Tensor, "batch time c_in"]
     ) -> tuple[
-            Float[torch.Tensor, "batch c_quant h"],
+            Float[torch.Tensor, "batch code_dim h"],
             Float[torch.Tensor, ""],
             tuple,
     ]:
@@ -94,7 +116,7 @@ class VQAutoEncoder(nn.Module):
 
     def __init__(
         self,
-        input_dim: int,
+        n_vertices: int,
         hidden_size: int,
         num_hidden_layers: int,
         num_attention_heads: int,
@@ -103,19 +125,21 @@ class VQAutoEncoder(nn.Module):
         quant_factor: int,
         instance_normalization_affine: bool,
         n_embed: int,
-        zquant_dim: int,
+        code_dim: int,
         face_quan_num: int,
         is_audio=False,
-        quantization_mode: Literal['default', 'fsq'] = 'default',
+        quantization_mode: Literal['default', 'fsq', 'bottleneck'] = 'default',
         disable_neck: bool = False,
     ):
         super().__init__()
         self.disable_neck = disable_neck
-        self.zquant_dim = zquant_dim
+        self.code_dim = code_dim
         self.face_quan_num = face_quan_num
-        self.input_dim = input_dim
+        self.input_dim = n_vertices * 3
+        self.n_vertices = n_vertices
+
         self.encoder = TransformerEncoder(
-            input_dim=input_dim,
+            input_dim=n_vertices * 3,
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
@@ -132,72 +156,74 @@ class VQAutoEncoder(nn.Module):
             relu_negative_slope=relu_negative_slope,
             quant_factor=quant_factor,
             instance_normalization_affine=instance_normalization_affine,
-            out_dim=input_dim,
+            out_dim=n_vertices * 3,
             is_audio=is_audio,
         )
-        self.zquant_dim = zquant_dim
-        self.face_quan_num = face_quan_num
+        self.face_quan_num = face_quan_num  # h in the paper
         match quantization_mode:
             case 'default':
-                self.quantize = VectorQuantizer(n_embed, zquant_dim, beta=0.25)
+                self.quantize = VectorQuantizer(n_embed, code_dim, beta=0.25)
             case 'fsq':
-                self.quantize = FSQWrapper(latent_dim=zquant_dim, levels=[face_quan_num])
+                self.quantize = FSQWrapper(latent_dim=code_dim, levels=[face_quan_num])
+            case 'bottleneck':
+                self.quantize = BottleNeck(dim=code_dim)
             case _:
                 raise ValueError(f"Invalid quantization mode: {quantization_mode}")
 
     def encode(
-        self, x: Float[torch.Tensor, "batch time c_in"]
+        self, x: Float[torch.Tensor, "batch time n_vertices 3"]
     ) -> tuple[
-            Float[torch.Tensor, "batch c_quant h"],
+            Float[torch.Tensor, "batch code_dim th"],
             Float[torch.Tensor, ""],
             tuple,
     ]:
         """
         Args:
-            x (torch.Tensor): input tensor of shape (batch, time, c_in) where c_in is the flattened
-                vertex coordinates, i.e. V*3
+            x (torch.Tensor): input tensor of shape (batch, time, n_vertices, 3)
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, tuple]: tuple containing:
                 - quant (torch.Tensor): quantized representation of the input tensor
-                    h is time * n_face_regions
+                    shape is (batch, code_dim, time * n_face_regions)
                 - emb_loss (torch.Tensor): embedding loss
                 - info (tuple): additional information
         """
+        batch_size, time, n_vertices, _ = x.shape
+        x = x.view(batch_size, time, -1)
         h = self.encoder(x)  ## x --> z'
-        h = h.view(x.shape[0], -1, self.face_quan_num, self.zquant_dim)
-        h = h.view(x.shape[0], -1, self.zquant_dim)  #
+        h = h.view(batch_size, time, self.face_quan_num, self.code_dim)  # (b, t, h, c)
+        h = h.view(batch_size, time * self.face_quan_num, self.code_dim)  # (b, t*h, c)
         quant, emb_loss, info = self.quantize(h)  ## finds nearest quantization
         return quant, emb_loss, info
 
     def decode(
         self,
-        quant: Float[torch.Tensor, "batch c_quant h"],
-    ) -> Float[torch.Tensor, "batch time c_in"]:
+        quant: Float[torch.Tensor, "batch code_dim th"],
+    ) -> Float[torch.Tensor, "batch time n_vertices 3"]:
         """
         Args:
-            quant (torch.Tensor): quantized representation of the input tensor. Has shape
-                (batch, c_quant, h), where h is time * n_face_regions.
+            quant (torch.Tensor): quantized representation of the input tensor.
+                Shape is (batch, code_dim, time * n_face_regions)
 
         Returns:
-            torch.Tensor: reconstructed tensor of shape (batch, time, c_in) where c_in is the
-                flattened vertex coordinates, i.e. V*3
+            torch.Tensor: reconstructed tensor of shape (batch, time, n_vertices, 3)
         """
         #BCL
+        batch_size, code_dim, ht = quant.shape
         quant = quant.permute(0, 2, 1)
-        quant = quant.view(quant.shape[0], -1, self.face_quan_num, self.zquant_dim).contiguous()
-        quant = quant.view(quant.shape[0], -1, self.face_quan_num * self.zquant_dim).contiguous()
+        quant = quant.view(batch_size, -1, self.face_quan_num, self.code_dim).contiguous()
+        quant = quant.view(batch_size, -1, self.face_quan_num * self.code_dim).contiguous()
         quant = quant.permute(0, 2, 1).contiguous()
         dec = self.decoder(quant)  ## z' --> x
-
-        return dec
+        dec = dec.view(batch_size, -1, self.n_vertices, 3)
+        return dec * 1e-3
 
     def forward(
         self,
-        x: Float[torch.Tensor, "batch time c_in"],
-        template: Float[torch.Tensor, "batch c_in"],
+        x: Float[torch.Tensor, "batch time n_vertices 3"],
+        template: Float[torch.Tensor, "batch n_vertices 3"],
     ) -> tuple[
-            Float[torch.Tensor, "batch time c_in"],
+            Float[torch.Tensor, "batch time n_vertices 3"],
             Float[torch.Tensor, ""],
             tuple,
     ]:
@@ -215,13 +241,11 @@ class VQAutoEncoder(nn.Module):
                 - emb_loss (torch.Tensor): embedding loss
                 - info (tuple): additional information
         """
-        template = template.unsqueeze(1)  #B,V*3 -> B, 1, V*3
-        x = x - template
+        template = template.unsqueeze(1)  # (b, 1, v, 3)
+        x = x - template  # (b, t, v, 3)
 
-        ###x.shape: [B, L C]
-        quant, emb_loss, info = self.encode(x)
-        ### quant [B, C, L]
-        dec = self.decode(quant)
+        quant, emb_loss, info = self.encode(x)  # (b, c, t*h)
+        dec = self.decode(quant)  # (b, t, v, 3)
 
         dec = dec + template
         return dec, emb_loss, info

@@ -1,13 +1,14 @@
 import torch
 import torch.nn as nn
+from jaxtyping import Float
+from tqdm import tqdm
 
-from thesis.code_talker.stage1_runner import Stage1Runner
 from thesis.code_talker.models.utils import (
     PeriodicPositionalEncoding,
     enc_dec_mask,
     init_biased_mask,
 )
-from jaxtyping import Float
+from thesis.code_talker.stage1_runner import Stage1Runner
 
 
 class CodeTalker(nn.Module):
@@ -66,8 +67,8 @@ class CodeTalker(nn.Module):
 
         # motion decoder
         self.face_quan_num = self.autoencoder.face_quan_num
-        self.zquant_dim = self.autoencoder.zquant_dim
-        self.feat_map = nn.Linear(feature_dim, self.face_quan_num * self.zquant_dim, bias=False)
+        self.code_dim = self.autoencoder.code_dim
+        self.feat_map = nn.Linear(feature_dim, self.face_quan_num * self.code_dim, bias=False)
         nn.init.constant_(self.feat_map.weight, 0)
 
     @property
@@ -78,8 +79,8 @@ class CodeTalker(nn.Module):
     def forward(
         self,
         audio_features: Float[torch.Tensor, 'batch time audio_feature_dim'],
-        template: Float[torch.Tensor, 'batch vertices_dim'],
-        vertices: Float[torch.Tensor, 'batch time vertices_dim'],
+        template: Float[torch.Tensor, 'batch n_vertices 3'],
+        vertices: Float[torch.Tensor, 'batch time n_vertices 3'],
     ) -> tuple[
             Float[torch.Tensor, ""],
             Float[torch.Tensor, ""],
@@ -88,18 +89,19 @@ class CodeTalker(nn.Module):
         """
         Args:
             audio_features (torch.Tensor): audio features of shape (batch, time, audio_feature_dim)
-            template (torch.Tensor): template vertices of shape (batch, vertices_dim)
-            vertices (torch.Tensor): ground truth vertices of shape (batch, time, vertices_dim)
+            template (torch.Tensor): template vertices of shape (batch, n_vertices, 3)
+            vertices (torch.Tensor): ground truth vertices of shape (batch, time, n_vertices, 3)
 
         Returns:
             tuple: A tuple containing the loss, motion loss, and regularization loss.
         """
         # tgt_mask: :math:`(T, T)`.
         # memory_mask: :math:`(T, S)`.
-        template = template.unsqueeze(1)  # (1,1,V*3)
+        template = template.unsqueeze(1)  # (1,1,V,3)
 
         # audio feature processing
         audio_features = self.audio_feature_map(audio_features)
+        batch_size, time = audio_features.shape[:2]
 
         # gt motion feature extraction
         #feat_q_gt, _ = self.autoencoder.get_quant(vertices - template)
@@ -108,7 +110,8 @@ class CodeTalker(nn.Module):
 
         # auto-regressive facial motion prediction with teacher-forcing
         vertices_input = torch.cat((template, vertices[:, :-1]), 1)  # shift one position
-        vertices_input = vertices_input - template
+        vertices_input = vertices_input - template  # (batch, seq_len, v, 3)
+        vertices_input = vertices_input.reshape(batch_size, time, -1)  # (batch, seq_len, V*3)
         vertices_input = self.vertices_map(vertices_input)
         vertices_input = vertices_input
         vertices_input = self.PPE(vertices_input)
@@ -126,33 +129,45 @@ class CodeTalker(nn.Module):
 
         # feature decoding
         vertices_out = self.autoencoder.decode(feat_out_q)
-        vertices_out = vertices_out + template
+        vertices_out = vertices_out + template  # (batch, seq_len, v, 3)
 
         # loss
-        loss_motion = nn.functional.mse_loss(vertices_out, vertices)  # (batch, seq_len, V*3)
+        loss_motion = nn.functional.mse_loss(vertices_out, vertices)  # (batch, seq_len, v, 3)
         # loss_motion = nn.functional.l1_loss(vertices_out, vertices)
         loss_reg = nn.functional.mse_loss(feat_out, feat_q_gt.detach())
 
         return self.motion_weight * loss_motion + self.reg_weight * loss_reg, loss_motion, loss_reg
 
+    @torch.no_grad()
     def predict(
         self,
-        audio_features: Float[torch.Tensor, 'batch time audio_feature_dim'],
-        template: Float[torch.Tensor, 'batch vertices_dim'],
-    ):
-        raise NotImplementedError("This method is not implemented yet.")
-        template = template.unsqueeze(1)  # (1,1, V*3)
+        audio_features: Float[torch.Tensor, 'time audio_feature_dim'],
+        template: Float[torch.Tensor, '1 n_vertices 3'],
+    ) -> Float[torch.Tensor, 'time n_vertices 3']:
+        """
+        Args:
+            audio_features (torch.Tensor): audio features of shape (time, audio_feature_dim)
+            template (torch.Tensor): template vertices of shape (1, n_vertices, 3)
+
+        Returns:
+            torch.Tensor: predicted vertices of shape (time, n_vertices, 3)
+        """
+        audio_features = audio_features.unsqueeze(0)  # (1, time, audio_feature_dim)
+        template = template.unsqueeze(1)  # (1,1,v,3)
 
         # audio feature processing
         audio_features = self.audio_feature_map(audio_features)  # (batch, time, feature_dim)
+        batch, time = audio_features.shape[:2]
         frame_num = audio_features.shape[1]
 
-        # autoregressive facial motion prediction
-        for i in range(frame_num):
+        # auto-regressive facial motion prediction
+        for i in tqdm(range(frame_num), desc="Predicting vertex positions"):
             if i == 0:
-                vertices_emb = obj_embedding  # (1,1,feature_dim)
-                style_emb = vertices_emb
-                vertices_input = self.PPE(style_emb)
+                # vertices_emb = obj_embedding  # (1,1,feature_dim)
+                # style_emb = vertices_emb
+                # TODO: this should be the hidden dim?
+                vertices_emb = torch.zeros((1, 1, 1024), device=self.device)
+                vertices_input = self.PPE(vertices_emb)
             else:
                 vertices_input = self.PPE(vertices_emb)
 
@@ -172,13 +187,17 @@ class CodeTalker(nn.Module):
             if i == 0:
                 vertices_out_q = self.autoencoder.decode(
                     torch.cat([feat_out_q, feat_out_q], dim=-1))
-                vertices_out_q = vertices_out_q[:, 0].unsqueeze(1)
+                vertices_out_q = vertices_out_q[:, 0].unsqueeze(1)  # (1, 1, v, 3)
+                vertices_out_q = vertices_out_q.reshape(vertices_out_q.shape[0],
+                                                        vertices_out_q.shape[1], -1)
             else:
                 vertices_out_q = self.autoencoder.decode(feat_out_q)
+                vertices_out_q = vertices_out_q.reshape(vertices_out_q.shape[0],
+                                                        vertices_out_q.shape[1], -1)
 
             if i != frame_num - 1:
                 new_output = self.vertices_map(vertices_out_q[:, -1, :]).unsqueeze(1)
-                new_output = new_output + style_emb
+                new_output = new_output
                 vertices_emb = torch.cat((vertices_emb, new_output), 1)
 
         # quantization and decoding
@@ -186,4 +205,5 @@ class CodeTalker(nn.Module):
         vertices_out = self.autoencoder.decode(feat_out_q)
 
         vertices_out = vertices_out + template
+        vertices_out = vertices_out.squeeze(0).reshape(frame_num, -1, 3)  # TODO: double check
         return vertices_out

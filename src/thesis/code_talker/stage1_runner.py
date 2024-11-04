@@ -23,6 +23,7 @@ from thesis.data_management import (
     UnbatchedFlameParams,
 )
 from thesis.flame import FlameHead
+from thesis.utils import generate_mesh_image
 
 
 # TODO: adapt time downsampling as well!
@@ -52,8 +53,7 @@ class Stage1Runner(pl.LightningModule):
                 eye=canonical_flame_params.eye,
                 scale=canonical_flame_params.scale,
             )
-        canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)
-        canonical_flame_vertices = canonical_flame_vertices.flatten().unsqueeze(0)  # (1, v*3)
+        canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)  # (1, v, 3)
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
 
     def configure_optimizers(self):
@@ -90,9 +90,8 @@ class Stage1Runner(pl.LightningModule):
                 scale=flame_params.scale,
             )
         flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-        batch_size, timesteps, _, _ = flame_vertices.shape
-        flame_vertices = flame_vertices.view(batch_size, timesteps, -1)
-        template = self.canonical_flame_vertices.repeat(batch_size, 1)
+        batch_size = flame_vertices.shape[0]
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
 
         # forward pass
         rec, quant_loss, info = self.model.forward(flame_vertices, template)
@@ -102,6 +101,15 @@ class Stage1Runner(pl.LightningModule):
         self.log('train/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log('train/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
         self.log('train/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
+
+        # log reconstructed picture
+        if self.global_step % 250 == 0:
+            img = generate_mesh_image(
+                vertex_positions=rec[0][0],  # (v, 3)
+                faces=self.flame_head.faces,
+            )
+            self.logger.experiment.add_image(
+                "train/reconstructed", img, self.global_step, dataformats="HWC")
 
         return loss
 
@@ -119,10 +127,9 @@ class Stage1Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-        flame_vertices = self.flame_head.forward(flame_params)
-        batch_size, timesteps, num_vertices, _ = flame_vertices.shape
-        flame_vertices = flame_vertices.view(batch_size, timesteps, -1)
-        template = self.canonical_flame_vertices.repeat(batch_size, 1)
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        batch_size = flame_vertices.shape[0]
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
 
         # forward pass
         rec, quant_loss, info = self.model.forward(flame_vertices, template)
@@ -134,6 +141,35 @@ class Stage1Runner(pl.LightningModule):
         self.log('val/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
 
         return loss
+
+    @torch.no_grad()
+    def predict(
+        self,
+        flame_params: UnbatchedFlameParams,
+    ) -> Float[torch.Tensor, "time n_vertices 3"]:
+        """
+        Returns the reconstructed flame vertices.
+
+        Args:
+            flame_params: The flame parameters to predict the vertices for.
+
+        Returns:
+            The reconstructed flame vertices.
+        """
+        self.model.eval()
+        flame_params = FlameParams(
+            shape=flame_params.shape.unsqueeze(0),
+            expr=flame_params.expr.unsqueeze(0),
+            neck=torch.zeros_like(flame_params.neck).unsqueeze(0)
+            if self.config.disable_neck else flame_params.neck.unsqueeze(0),
+            jaw=flame_params.jaw.unsqueeze(0),
+            eye=flame_params.eye.unsqueeze(0),
+            scale=flame_params.scale.unsqueeze(0),
+        )
+        flame_vertices = self.flame_head.forward(flame_params)
+        template = self.canonical_flame_vertices
+        rec, _, _ = self.model.forward(flame_vertices, template)
+        return rec.squeeze(0)
 
 
 # ==================================================================================== #

@@ -6,7 +6,7 @@ from typing import NamedTuple
 class QuantizerConfig(NamedTuple):
     """
     Args:
-        input_dim (int):
+        n_vertices (int):
         hidden_size (int):
         num_hidden_layers (int):
         num_attention_heads (int):
@@ -15,13 +15,13 @@ class QuantizerConfig(NamedTuple):
         quant_factor (int):
         instance_normalization_affine (bool):
         n_embed (int):
-        zquant_dim (int): quanitzed embedding dimension
+        code_dim (int): quanitzed embedding dimension
         face_quan_num (int): number of face components
         is_audio (bool):
         quantization_mode (str): quantization mode
         disable_neck (bool):
     """
-    input_dim: int = 5143 * 3  # 3 * num_vertices
+    n_vertices: int = 5143
     hidden_size: int = 1024
     num_hidden_layers: int = 6
     num_attention_heads: int = 8
@@ -30,7 +30,7 @@ class QuantizerConfig(NamedTuple):
     quant_factor: int = 0
     instance_normalization_affine: bool = False
     n_embed: int = 256
-    zquant_dim: int = 64
+    code_dim: int = 64
     face_quan_num: int = 16
     is_audio: bool = False
     # window size is hardcoded to 1
@@ -41,7 +41,7 @@ class QuantizerConfig(NamedTuple):
 class CodeTalkerConfig(NamedTuple):
     """
     Also includes the training configuration, as the og code doesn't separate them here.
-    
+
     Args:
         feature_dim (int):
         positional_encoding_period (int):
