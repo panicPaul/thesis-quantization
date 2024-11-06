@@ -3,8 +3,13 @@
 import os
 import tempfile
 
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
 import pydub
 import soundfile as sf
+import torch
+from jaxtyping import Float, Int, UInt8
 from moviepy.editor import AudioFileClip, VideoFileClip
 
 from thesis.audio_feature_processing.audio_cleaning import pydub_to_np
@@ -110,3 +115,93 @@ def add_audio(
 
     # Replace the original file with the new one
     os.replace(temp_output_path, video_path)
+
+
+from moviepy.editor import VideoFileClip, clips_array
+
+
+def side_by_side(
+    video_gt: str,
+    video_pred: str,
+    output_path: str,
+) -> None:
+    """
+    Combine two videos side by side.
+
+    Args:
+        video_gt: Path to the first video file
+        video_pred: Path to the second video file
+        output_path: Path where the combined video will be saved
+    """
+    # Load the videos
+    video_1 = VideoFileClip(video_gt)
+    video_2 = VideoFileClip(video_pred)
+
+    # Resize videos to the same height if needed
+    height = min(video_1.h, video_2.h)
+    video_1_resized = video_1.resize(height=height)
+    video_2_resized = video_2.resize(height=height)
+
+    # Make sure both videos have the same duration
+    min_duration = min(video_1.duration, video_2.duration)
+    video_1_trimmed = video_1_resized.subclip(0, min_duration)
+    video_2_trimmed = video_2_resized.subclip(0, min_duration)
+
+    # Combine the videos side by side using clips_array
+    final_video = clips_array([[video_1_trimmed, video_2_trimmed]])
+
+    # Write the result
+    final_video.write_videofile(output_path)
+
+    # Close all clips
+    video_1.close()
+    video_2.close()
+    video_1_resized.close()
+    video_2_resized.close()
+    video_1_trimmed.close()
+    video_2_trimmed.close()
+    final_video.close()
+
+
+def render_mesh_image(
+    vertex_positions: Float[torch.Tensor, 'n_vertices 3'],
+    faces: Int[torch.Tensor, 'n_faces 3'],
+    image_height: int = 1_000,
+    image_width: int = 1_000,
+) -> UInt8[np.ndarray, "h w 3"]:
+    """
+    Generates an image of the mesh at the given time step.
+
+    Args:
+        vertex_positions: The vertex positions.
+        faces: The faces of the mesh.
+        image_height: The height of the image.
+        image_width: The width of the image.
+
+    Returns:
+        The image of the mesh.
+    """
+
+    # Generate the vertices and faces
+    vertices = vertex_positions.detach().cpu().numpy()
+    faces = faces.detach().cpu().numpy()
+
+    # Generate the matplotlib image
+    # matplotlib.use('agg')
+    fig = plt.figure(figsize=(image_width / 100, image_height / 100))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot_trisurf(
+        vertices[:, 2],
+        vertices[:, 0],
+        faces,
+        vertices[:, 1],
+        shade=True,
+    )
+    ax.view_init(azim=10, elev=10)
+    ax.set_box_aspect([1, 1, 1])  # Aspect ratio is 1:1:1
+    ax.set_axis_off()
+
+    fig.canvas.draw()
+    image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    plt.close(fig)
+    return image.reshape(fig.canvas.get_width_height()[::-1] + (3,))

@@ -13,8 +13,7 @@ from thesis.code_talker.stage1_runner import Stage1Runner
 from thesis.code_talker.stage2_runner import Stage2Runner
 from thesis.data_management import SequenceManager, UnbatchedFlameParams
 from thesis.flame import FlameHead
-from thesis.utils import generate_mesh_image
-from thesis.video_utils import add_audio
+from thesis.video_utils import add_audio, render_mesh_image
 
 
 def render_vertex_video(
@@ -23,6 +22,7 @@ def render_vertex_video(
     output_path: str,
     audio_path: str | None = None,
     fps: int = 30,
+    quick_time_compatible: bool = False,
 ) -> None:
     """
     Args:
@@ -32,12 +32,13 @@ def render_vertex_video(
         output_path (str): The path to save the video to.
         audio_path (str | None): The path to an audio file to add to the video.
         fps (int): The frames per second of the video.
+        quick_time_compatible (bool): Whether to make the video QuickTime compatible.
     """
 
     # Generate the images
     images = []
     for time_step in tqdm(range(vertices.shape[0]), 'Rendering video'):
-        image = generate_mesh_image(vertices[time_step], faces)
+        image = render_mesh_image(vertices[time_step], faces)
         images.append(image)
 
     # Save the images as a video
@@ -53,13 +54,14 @@ def render_vertex_video(
     out.release()
 
     if audio_path is not None:
-        add_audio(output_path, audio_path, fps)
+        add_audio(output_path, audio_path, fps, quicktime_compatible=quick_time_compatible)
 
 
 def render_vertex_reconstruction(
     checkpoint_path: str,
     sequence: int,
     output_path: str,
+    quick_time_compatible: bool = False,
 ) -> None:
     """
     Evaluation of the VQ-VAE model on a sequence.
@@ -68,6 +70,7 @@ def render_vertex_reconstruction(
         checkpoint_path (str): The path to the checkpoint of the VQ-VAE model.
         sequence (int): The sequence to evaluate the model on.
         output_path (str): The path to save the video to.
+        quick_time_compatible (bool): Whether to make the video QuickTime compatible.
     """
 
     runner = Stage1Runner.load_from_checkpoint(checkpoint_path)
@@ -100,7 +103,8 @@ def render_vertex_reconstruction(
         "audio",
         "audio_recording_cleaned.ogg",
     )
-    render_vertex_video(vertices, faces, output_path, audio_path)
+    render_vertex_video(
+        vertices, faces, output_path, audio_path, quick_time_compatible=quick_time_compatible)
 
 
 def render_audio_prediction(
@@ -108,6 +112,7 @@ def render_audio_prediction(
     output_path: str,
     audio_path: str | None = None,
     sequence: int | None = None,
+    quick_time_compatible: bool = False,
 ) -> None:
     """
     Full audio to vertex prediction.
@@ -118,6 +123,7 @@ def render_audio_prediction(
         audio_path (str | None): The path to the audio file to use. Either this or `sequence` must
             be provided.
         sequence (int | None): The sequence to use. Either this or `audio_path` must be provided.
+        quick_time_compatible (bool): Whether to make the video QuickTime compatible.
     """
 
     assert (audio_path is None) != (sequence is None), \
@@ -149,7 +155,44 @@ def render_audio_prediction(
     faces = flame_head.faces
 
     # Render the video
-    render_vertex_video(vertices, faces, output_path, audio_path)
+    render_vertex_video(
+        vertices, faces, output_path, audio_path, quick_time_compatible=quick_time_compatible)
+
+
+def render_flame(
+    sequence: int,
+    output_path: str,
+    use_neck: bool = True,
+    quick_time_compatible: bool = False,
+) -> None:
+    # Load the sequence
+    sm = SequenceManager(sequence=sequence)
+    flame_params = sm.flame_params[:]
+    flame_params = UnbatchedFlameParams(
+        shape=flame_params.shape.cuda(),
+        expr=flame_params.expr.cuda(),
+        neck=flame_params.neck.cuda() if use_neck else torch.zeros_like(flame_params.neck).cuda(),
+        jaw=flame_params.jaw.cuda(),
+        eye=flame_params.eye.cuda(),
+        scale=flame_params.scale.cuda(),
+    )
+    flame_head = FlameHead()
+    flame_head.cuda()
+
+    # Get vertices
+    vertices = flame_head.forward(flame_params)
+    faces = flame_head.faces
+
+    # Render the video
+    audio_path = os.path.join(
+        sm.data_dir,
+        "sequences",
+        sm.sequence,
+        "audio",
+        "audio_recording_cleaned.ogg",
+    )
+    render_vertex_video(
+        vertices, faces, output_path, audio_path, quick_time_compatible=quick_time_compatible)
 
 
 # ==================================================================================== #
@@ -159,18 +202,38 @@ def render_audio_prediction(
 if __name__ == '__main__':
 
     # mode = 'vertex_reconstruction'
-    mode = 'audio_pred_sequence'
+    # mode = 'audio_pred_sequence'
+    mode = 'flame'
+    quick_time_compatible = False
+    sequence = 100
 
     match mode:
         case 'vertex_reconstruction':
             # vertex reconstruction
             checkpoint_path = 'tb_logs/vector_quantization/without_neck_default/version_16/checkpoints/epoch=199-step=15400.ckpt'
-            sequence = 3
             output_path = f'tmp/vq_reconstruction_sequence_{sequence}.mp4'
-            render_vertex_reconstruction(checkpoint_path, sequence, output_path)
+            render_vertex_reconstruction(
+                checkpoint_path,
+                sequence,
+                output_path,
+                quick_time_compatible=quick_time_compatible)
 
         case 'audio_pred_sequence':
             checkpoint_path = 'tb_logs/audio_prediction/prediction_new_vq_vae/version_4/checkpoints/epoch=99-step=7700.ckpt'
-            sequence = 3
             output_path = f'tmp/audio_pred_sequence_{sequence}.mp4'
-            render_audio_prediction(checkpoint_path, output_path, sequence=sequence)
+            render_audio_prediction(
+                checkpoint_path,
+                output_path,
+                sequence=sequence,
+                quick_time_compatible=quick_time_compatible,
+            )
+
+        case 'flame':
+            output_path = f'tmp/flame_sequence_{sequence}.mp4'
+            use_neck = False
+            render_flame(
+                sequence,
+                output_path,
+                quick_time_compatible=quick_time_compatible,
+                use_neck=use_neck,
+            )

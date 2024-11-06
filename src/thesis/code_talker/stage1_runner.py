@@ -23,7 +23,7 @@ from thesis.data_management import (
     UnbatchedFlameParams,
 )
 from thesis.flame import FlameHead
-from thesis.utils import generate_mesh_image
+from thesis.video_utils import render_mesh_image
 
 
 # TODO: adapt time downsampling as well!
@@ -104,7 +104,7 @@ class Stage1Runner(pl.LightningModule):
 
         # log reconstructed picture
         if self.global_step % 250 == 0:
-            img = generate_mesh_image(
+            img = render_mesh_image(
                 vertex_positions=rec[0][0],  # (v, 3)
                 faces=self.flame_head.faces,
             )
