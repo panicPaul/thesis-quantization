@@ -19,7 +19,7 @@ from jaxtyping import Float, Int
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig, ListConfig
 from torch import nn
-from torch.optim import Adam, AdamW
+from torch.optim import Adam, AdamW, SparseAdam
 from torch.utils.data import DataLoader
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -27,6 +27,7 @@ from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from thesis.config import GaussianSplattingSettings, load_config
 from thesis.constants import (
     CANONICAL_FLAME_PARAMS,
+    CANONICAL_SEQUENCE_FRAME,
     DEFAULT_SE3_ROTATION,
     DEFAULT_SE3_TRANSLATION,
     TEST_CAMS,
@@ -46,15 +47,20 @@ from thesis.deformation_field.barycentric_weighting import (
 )
 from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
-from thesis.deformation_field.per_gaussian_fine_tuning import PerGaussianFineTuning
+from thesis.deformation_field.per_gaussian_fine_tuning_2 import (
+    RotationAndScaleAdjustments,
+)
+from thesis.deformation_field.rigging_params import RiggingParams
 from thesis.flame import FlameHead
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
+    inside_mouth_flame_initialization,
     point_cloud_initialization,
     pre_trained_initialization,
     random_initialization,
 )
+from thesis.gaussian_splatting.screen_space_denoising import ScreenSpaceDenoising
 from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
 from thesis.utils import (
     apply_se3_to_orientation,
@@ -64,18 +70,17 @@ from thesis.utils import (
 )
 
 
-class GaussianSplattingSingleFrame(pl.LightningModule):
+class RiggedGaussianSplatting(pl.LightningModule):
     """
     We learn the gaussian splatting on a
     """
 
     def __init__(
         self,
-        sequence: int,
-        frame: int,
         gaussian_splatting_settings: GaussianSplattingSettings | DictConfig,
         learning_rates: DictConfig,
         enable_viewer: bool = True,
+        train_sequences: list[int] | None = TRAIN_SEQUENCES,
         ckpt_path: str | None = None,
     ) -> None:
         """
@@ -88,15 +93,17 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 splatting settings.
             learning_rates (DictConfig): Learning rates.
             enable_viewer (bool): Whether to enable the viewer.
+            train_sequences (list[int]): List of sequences to train on.
             checkpoint_path (str | None): Path to the checkpoint. Needs to be provided if
                 loading a pre-trained model, since torch will throw size mismatch errors
                 otherwise.
         """
         super().__init__()
         self.save_hyperparameters()
-        self.sequence = sequence
-        self.frame = frame
         self.automatic_optimization = False
+        if train_sequences is None:
+            train_sequences = TRAIN_SEQUENCES
+        self.train_sequences = train_sequences
 
         # Save the settings
         self.learning_rates = learning_rates
@@ -146,7 +153,6 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                         .use_view_dependent_color_mlp,
                     ))
             case "flame":
-
                 self.splats = nn.ParameterDict(
                     flame_initialization(
                         flame_params=canonical_flame_params,
@@ -164,6 +170,16 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 raise ValueError("Unknown initialization mode: "
                                  f"{gaussian_splatting_settings.initialization_mode}")
 
+        # Initialize the inside mouth splats
+        self.inside_mouth_splats = inside_mouth_flame_initialization(
+            flame_params=canonical_flame_params,
+            scene_scale=gaussian_splatting_settings.scene_scale,
+            feature_dim=gaussian_splatting_settings.feature_dim,
+            colors_sh_degree=gaussian_splatting_settings.sh_degree,
+            initialize_spherical_harmonics=not gaussian_splatting_settings
+            .use_view_dependent_color_mlp,
+        )
+
         # Initialize the densification strategy
         refine_stop_iteration = gaussian_splatting_settings.refine_stop_iteration
         if isinstance(refine_stop_iteration, float):
@@ -178,8 +194,19 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
                 )
+                self.inside_mouth_strategy = DefaultStrategy(
+                    refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
+                    refine_stop_iter=refine_stop_iteration,
+                    verbose=True,
+                )
             case "monte_carlo_markov_chain":
                 self.strategy = MCMCStrategy(
+                    refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
+                    refine_stop_iter=refine_stop_iteration,
+                    verbose=True,
+                    cap_max=gaussian_splatting_settings.cap_max,
+                )
+                self.inside_mouth_strategy = MCMCStrategy(
                     refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
@@ -189,15 +216,21 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 raise ValueError("Unknown densification mode: "
                                  f"{gaussian_splatting_settings.densification_mode}")
         self.strategy_state = self.strategy.initialize_state()
-
-        # quantization (pre-processing)
-        # TODO: implement quantization for flame and audio
+        self.inside_mouth_strategy_state = self.inside_mouth_strategy.initialize_state()
 
         # deformation_field (pre-processing)
         # non-optimizable
         self.flame_head = FlameHead()
         self.flame_knn = FlameKNN(k=3, canonical_params=canonical_flame_params)
         self.flame_mesh_extractor = FlameMeshSE3Extraction(self.flame_head)
+
+        # Rigging parameters
+        self.rigging_params = RiggingParams(self.train_sequences)
+
+        # Per-gaussian motion adjustment
+        if gaussian_splatting_settings.per_gaussian_motion_adjustment:
+            self.rotation_and_scale_adjustments = RotationAndScaleAdjustments(
+                gaussian_latent_dim=gaussian_splatting_settings.feature_dim)
 
         # View-dependent color module (pre-processing)
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
@@ -206,7 +239,6 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 sh_degree=gaussian_splatting_settings.sh_degree,
                 num_cameras=len(TRAIN_CAMS),
             )
-        # NOTE: we don't allow for per gaussian fine tuning in this mode for obvious reasons
 
         # Get the rasterization function
         match gaussian_splatting_settings.rasterization_mode:
@@ -232,6 +264,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         match gaussian_splatting_settings.screen_space_denoising_mode:
             case 'none':
                 self.screen_space_denoiser = lambda img, alphas: img
+            case 'cnn':
+                self.screen_space_denoiser = ScreenSpaceDenoising()
             case _:
                 raise ValueError("Unknown screen-space denoising mode: "
                                  f"{gaussian_splatting_settings.screen_space_denoising_mode}")
@@ -246,15 +280,31 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         self.lpips = LearnedPerceptualImagePatchSimilarity(
             net_type=gaussian_splatting_settings.lpips_network, normalize=True)
 
-    def configure_optimizers(self):
+    def configure_optimizers(
+        self,
+        mode: Literal['static', 'rigged', 'dynamic', 'inside_mouth'] = 'static',
+    ):
         """
-        Configures the optimizer.
+        Configures the optimizer. We have four modes:
+
+            - static:       We optimize the splats directly but freeze the rigging parameters and
+                            the per-gaussian motion adjustments.
+            - rigged:       We optimize the rigging parameters and the per-gaussian motion
+                            adjustments but freeze the splats.
+            - dynamic:      We optimize everything.
+            - inside_mouth: The splats and rigging parameters are frozen for the normal
+                            splats, but the inside mouth splats and rigging params are optimized.
+
+        The post-processing modules are always optimized, as is the view-dependent color MLP.
+
+        Args:
+            mode (str): The mode of the optimizer. Can be either 'static', rigged' or 'dynamic'.
 
         Returns:
             A tuple containing the splat optimizers and other optimizers.
         """
 
-        # splat optimizers
+        # ---> splat optimizers
         batch_size = self.gaussian_splatting_settings.camera_batch_size
         batch_scaling = math.sqrt(batch_size)
         scene_scale = self.gaussian_splatting_settings.scene_scale
@@ -266,12 +316,13 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             "opacities": self.learning_rates.opacities_lr * batch_scaling,
             "features": self.learning_rates.features_lr * batch_scaling,
         }
+        enable_splats = 1.0 if mode in ['static', 'dynamic'] else 0.0
         splat_optimizers = {
             name:
                 Adam(
                     [{
                         "params": self.splats[name],
-                        "lr": lr,
+                        "lr": lr * enable_splats,
                         "name": name,
                     }],
                     eps=1e-15 / batch_scaling,
@@ -283,26 +334,87 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         if not self.gaussian_splatting_settings.use_view_dependent_color_mlp:
             splat_optimizers["sh0"] = Adam(
                 [self.splats["sh0"]],
-                lr=self.learning_rates.sh0_lr * batch_scaling,
+                lr=self.learning_rates.sh0_lr * batch_scaling * enable_splats,
                 eps=1e-15 / batch_scaling,
                 betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
             )
             splat_optimizers["shN"] = Adam(
                 [self.splats["shN"]],
-                lr=(self.learning_rates.sh0_lr / 20) * batch_scaling,
+                lr=(self.learning_rates.sh0_lr / 20) * batch_scaling * enable_splats,
                 eps=1e-15 / batch_scaling,
                 betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
             )
         else:
             splat_optimizers['colors'] = Adam(
                 [self.splats['colors']],
-                lr=self.learning_rates.color_lr * batch_scaling,
+                lr=self.learning_rates.color_lr * batch_scaling * enable_splats,
                 eps=1e-15 / batch_scaling,
                 betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
             )
 
-        # other optimizers
+        # ---> inside mouth splat optimizers
+        enable_inside_mouth_splats = 1.0 if mode in ['static', 'dynamic', 'inside_mouth'] else 0.0
+        inside_mouth_splat_optimizers = {
+            name:
+                Adam(
+                    [{
+                        "params": self.inside_mouth_splats[name],
+                        "lr": lr * enable_inside_mouth_splats,
+                        "name": name,
+                    }],
+                    eps=1e-15 / batch_scaling,
+                    # TODO: check betas logic when cfg.batch_size is larger than 10 betas[0]
+                    #       will be zero.
+                    betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
+                ) for name, lr in splats_learning_rates.items()
+        }
+        if not self.gaussian_splatting_settings.use_view_dependent_color_mlp:
+            inside_mouth_splat_optimizers["sh0"] = Adam(
+                [self.inside_mouth_splats["sh0"]],
+                lr=self.learning_rates.sh0_lr * batch_scaling * enable_inside_mouth_splats,
+                eps=1e-15 / batch_scaling,
+                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
+            )
+            inside_mouth_splat_optimizers["shN"] = Adam(
+                [self.inside_mouth_splats["shN"]],
+                lr=(self.learning_rates.sh0_lr / 20) * batch_scaling * enable_inside_mouth_splats,
+                eps=1e-15 / batch_scaling,
+                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
+            )
+        else:
+            inside_mouth_splat_optimizers['colors'] = Adam(
+                [self.inside_mouth_splats['colors']],
+                lr=self.learning_rates.color_lr * batch_scaling * enable_inside_mouth_splats,
+                eps=1e-15 / batch_scaling,
+                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
+            )
+
+        # ---> pre-processing optimizers
         other_optimizers = {}
+        if hasattr(self, "rigging_params"):
+            enable_rigging_params = 1.0 if mode in ['rigged', 'dynamic'] else 0.0
+            enable_inside_mouth_rigging_params = 1.0 if mode in [
+                'inside_mouth', 'rigged', 'dynamic'
+            ] else 0.0
+            other_optimizers["rigging_params_flame_vertices"] = SparseAdam(
+                self.rigging_params.flame_code_books.parameters(),
+                lr=self.learning_rates.rigging_params_flame_vertices_lr * batch_scaling
+                * enable_rigging_params,
+            )
+            other_optimizers["rigging_params_inner_mouth_vertices"] = SparseAdam(
+                self.rigging_params.inner_mouth_code_books.parameters(),
+                lr=self.learning_rates.rigging_params_inner_mouth_vertices_lr * batch_scaling
+                * enable_inside_mouth_rigging_params,
+            )
+
+        if hasattr(self, "rotation_and_scale_adjustments"):
+            enable_rotation_and_scale_adjustments = 1.0 if mode in ['rigged', 'dynamic'] else 0.0
+            other_optimizers["rotation_and_scale_adjustments"] = Adam(
+                self.rotation_and_scale_adjustments.parameters(),
+                lr=self.learning_rates.motion_adjustment_lr * batch_scaling
+                * enable_rotation_and_scale_adjustments,
+            )
+
         if hasattr(self, "view_dependent_color_mlp"):
             other_optimizers["view_dependent_color_mlp_head"] = Adam(
                 self.view_dependent_color_mlp.color_head.parameters(),
@@ -314,21 +426,25 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 weight_decay=self.learning_rates.color_mlp_weight_decay,
             )
 
+        # ---> post-processing optimizers
         if hasattr(self, "learnable_color_correction"):
             other_optimizers["learnable_color_correction"] = Adam(
                 self.learnable_color_correction.parameters(),
                 lr=self.learning_rates.color_correction_lr * batch_scaling,
             )
-        if hasattr(self, "gaussian_motion_adjustment"):
-            other_optimizers["gaussian_motion_adjustment"] = Adam(
-                self.gaussian_motion_adjustment.parameters(),
-                lr=self.learning_rates.motion_adjustment_lr * batch_scaling,
+        if hasattr(self, "screen_space_denoiser"):
+            other_optimizers["screen_space_denoiser"] = Adam(
+                self.screen_space_denoiser.parameters(),
+                lr=self.learning_rates.screen_space_denoiser_lr * batch_scaling,
             )
 
         # schedulers
         schedulers = {}
         schedulers["means"] = torch.optim.lr_scheduler.ExponentialLR(
             splat_optimizers["means"],
+            gamma=0.01**(1.0 / self.gaussian_splatting_settings.train_iterations))
+        schedulers['inside_mouth_means'] = torch.optim.lr_scheduler.ExponentialLR(
+            inside_mouth_splat_optimizers["means"],
             gamma=0.01**(1.0 / self.gaussian_splatting_settings.train_iterations))
         optimizer_list = list(splat_optimizers.values()) + list(other_optimizers.values())
         self.splat_optimizer_keys = list(splat_optimizers.keys())
@@ -352,8 +468,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         camera_indices: Int[torch.Tensor, "cam"] | None = None,
         cur_sh_degree: int | None = None,
         se3_transform: UnbatchedSE3Transform | None = None,
-        flame_params: UnbatchedFlameParams | None = None,
-        audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
+        rigging_params: Float[torch.Tensor, 'n_vertices 3'] | None = None,
+        mode: Literal["default", "inside_mouth"] = "default",
     ) -> tuple[
             Float[torch.Tensor, "n_gaussians 3"],
             Float[torch.Tensor, "n_gaussians 4"],
@@ -363,7 +479,11 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             dict,
     ]:
         """
-        Pre-processing step for the rasterization.
+        Pre-processing step for the rasterization. Note that the rigging params are actually
+        shared between the inside mouth and the default splats. The inside mouth branch is always
+        behind the default branch and is mostly used, as the name suggests, for the inside mouth
+        splats. But we don't actually mask the splats so they could also be used for supplementing
+        the default splats.
 
         Args:
             infos (dict): Dictionary to store additional information.
@@ -374,9 +494,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 degree is used.
             se3_transform (torch.Tensor): SE3 transform matrix, shape: `(cam, 4, 4)`. If
                 `None`, no transformation is applied.
-            flame_params (torch.Tensor): Windowed flame parameters.
-            audio_features (torch.Tensor): Windowed audio features. Shape:
-                `(cam, window_size, 1024)`.
+            rigging_params (torch.Tensor): The deformed flame vertices. Shape: `(n_vertices, 3)`.
+
 
         Returns:
             tuple: A tuple containing
@@ -387,57 +506,77 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 - (*torch.Tensor*): Colors, shape: `(n_gaussians, 3)`.
                 - (*dict*): Infos, a dictionary containing additional information.
         """
-        means = self.splats["means"]
-        quats = self.splats["quats"]
-        features = self.splats["features"]
-        # quantization
-        # TODO: implement quantization for flame and audio
 
-        # query deformation_field for windowed rotation and translations
-        indices, _ = self.flame_knn.forward(means)
-        canonical_vertices = self.flame_head.forward(self._canonical_flame_params)
-        deformed_vertices = self.flame_head.forward(flame_params)
-        vertex_rotations, vertex_translations = self.flame_mesh_extractor(
-            canonical_vertices, deformed_vertices)
-        vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
-        gaussian_rotations = self.flame_knn.gather(
-            indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
-        # NOTE: I do not want to have to deal with spherical interpolation and this should be close
-        #       enough
-        gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
-        gaussian_rotations = gaussian_rotations.permute(1, 0, 2)  # (window_size, n_gaussians, 4)
+        # ---> Get the splats
+        if mode == "default":
+            means = self.splats["means"]
+            quats = self.splats["quats"]
+            features = self.splats["features"]
+            scales = torch.exp(self.splats["scales"])
+            opacities = torch.sigmoid(self.splats["opacities"])
+            if hasattr(self, "view_dependent_color_mlp"):
+                colors = self.splats["colors"]
+            else:
+                colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)
+        else:
+            means = self.inside_mouth_splats["means"]
+            quats = self.inside_mouth_splats["quats"]
+            features = self.inside_mouth_splats["features"]
+            scales = torch.exp(self.inside_mouth_splats["scales"])
+            opacities = torch.sigmoid(self.inside_mouth_splats["opacities"])
+            if hasattr(self, "view_dependent_color_mlp"):
+                colors = self.inside_mouth_splats["colors"]
+            else:
+                colors = torch.cat(
+                    [self.inside_mouth_splats["sh0"], self.inside_mouth_splats["shN"]], 1)
 
-        vertex_translations = vertex_translations.permute(1, 0, 2)  # (n_vertices, window_size, 3)
-        gaussian_translations = self.flame_knn.gather(
-            indices, vertex_translations)  # (n_gaussians, k, window_size, 3)
-        nn_positions = self.flame_knn.gather(indices, canonical_vertices[0])  # (n_gaussians, 3)
-        barycentric_weights = compute_barycentric_weights(means, nn_positions)  # (n_gaussians, 3)
-        gaussian_translations = apply_barycentric_weights(
-            barycentric_weights, gaussian_translations)  # (n_gaussians, window_size, 3)
-        gaussian_translations = gaussian_translations.permute(1, 0,
-                                                              2)  # (window_size, n_gaussians, 3)
+        # ---> Apply the deformation field
+        if rigging_params is not None:
+            # query deformation_field for windowed rotation and translations
+            indices, _ = self.flame_knn.forward(means)
+            canonical_vertices = self.flame_head.forward(self._canonical_flame_params)
+            deformed_vertices = rigging_params
+            vertex_rotations, vertex_translations = self.flame_mesh_extractor(
+                canonical_vertices, deformed_vertices)
+            vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
+            gaussian_rotations = self.flame_knn.gather(
+                indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
+            # NOTE: I do not want to have to deal with spherical interpolation and this should be close
+            #       enough
+            gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
+            gaussian_rotations = gaussian_rotations.permute(1, 0,
+                                                            2)  # (window_size, n_gaussians, 4)
 
-        # apply deformation_field to means
-        window_size = self.gaussian_splatting_settings.prior_window_size
-        cur_rotation = gaussian_rotations[window_size // 2]
-        cur_translation = gaussian_translations[window_size // 2]
-        means = means + cur_translation
-        quats = nn.functional.normalize(quats, p=2, dim=-1)
-        quats = quaternion_multiplication(cur_rotation, quats)
+            vertex_translations = vertex_translations.permute(1, 0,
+                                                              2)  # (n_vertices, window_size, 3)
+            gaussian_translations = self.flame_knn.gather(
+                indices, vertex_translations)  # (n_gaussians, k, window_size, 3)
+            nn_positions = self.flame_knn.gather(indices,
+                                                 canonical_vertices[0])  # (n_gaussians, 3)
+            barycentric_weights = compute_barycentric_weights(means,
+                                                              nn_positions)  # (n_gaussians, 3)
+            gaussian_translations = apply_barycentric_weights(
+                barycentric_weights, gaussian_translations)  # (n_gaussians, window_size, 3)
+            gaussian_translations = gaussian_translations.permute(
+                1, 0, 2)  # (window_size, n_gaussians, 3)
 
-        # per gaussian fine tuning
-        if self.gaussian_splatting_settings.per_gaussian_motion_adjustment:
-            gaussian_rotations, gaussian_translations = self.gaussian_motion_adjustment.forward(
-                per_gaussian_latent=features,
-                audio_latent=audio_features,
-                motion_history=gaussian_translations,
-            )
-            means = means + gaussian_translations
-            quats = quaternion_multiplication(gaussian_rotations, quats)
-            mean_motion_adjustment = torch.norm(gaussian_translations, dim=-1).mean()
-            infos['per_gaussian_movement'] = mean_motion_adjustment
+            # per gaussian fine tuning
+            if self.gaussian_splatting_settings.per_gaussian_motion_adjustment:
+                quats, scales = self.rotation_and_scale_adjustments.forward(
+                    means=means,
+                    quats=quats,
+                    translations=gaussian_translations,
+                    rotations=gaussian_rotations,
+                    barycentric_weights=barycentric_weights,
+                    scales=scales,
+                )
+                mean_motion_adjustment = torch.norm(gaussian_translations, dim=-1).mean()
+                if mode == "default":
+                    infos['per_gaussian_movement'] = mean_motion_adjustment
+                else:
+                    infos['per_gaussian_inside_mouth_movement'] = mean_motion_adjustment
 
-        # se3 transformation
+        # ---> se3 transformation
         if se3_transform is not None:
             rotation = se3_transform.rotation
             translation = se3_transform.translation
@@ -448,17 +587,96 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         quats = nn.functional.normalize(quats, p=2, dim=-1)
         quats = apply_se3_to_orientation(rotation, quats)
 
-        # view-dependent color
+        # ---> view-dependent color
         if hasattr(self, "view_dependent_color_mlp"):
-            colors = self.view_dependent_color_mlp.forward(features, camera_indices, means,
-                                                           self.splats['colors'], cam_2_world,
-                                                           cur_sh_degree)
-        else:
-            colors = colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)
-        scales = torch.exp(self.splats["scales"])
-        opacities = torch.sigmoid(self.splats["opacities"])
+            colors = self.view_dependent_color_mlp.forward(
+                features=features,
+                camera_ids=camera_indices,
+                means=means,
+                colors=colors,
+                cam_2_world=cam_2_world,
+                cur_sh_degree=cur_sh_degree,
+            )
 
         return means, quats, scales, opacities, colors, infos
+
+    def post_processing(
+        self,
+        infos: dict,
+        render_images: Float[torch.Tensor, "cam H W 3"],
+        render_alphas: Float[torch.Tensor, "cam H W 1"],
+        inside_mouth_render_images: Float[torch.Tensor, "cam H W 3"],
+        inside_mouth_render_alphas: Float[torch.Tensor, "cam H W 1"],
+        background: Float[torch.Tensor, "3"],
+        color_correction: Float[torch.Tensor, "cam 3 3"] | None = None,
+        camera_indices: Int[torch.Tensor, "cam"] | None = None,
+    ) -> tuple[Float[torch.Tensor, "cam H W 3"], Float[torch.Tensor, "cam H W 1"], dict]:
+        """
+        Post-processing step for the rasterization.
+
+        Args:
+            infos (dict): Dictionary to store additional information.
+            render_images (torch.Tensor): Rendered images, shape: `(cam, H, W, 3)`.
+            inside_mouth_render_images (torch.Tensor): Inside mouth rendered images, shape:
+                `(cam, H, W, 3)`.
+            background (torch.Tensor): Background color, shape: `(3,)`.
+            color_correction (torch.Tensor): Color correction matrix, shape: `(cam, 3, 3)`.
+            camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
+                color correction matrix. Shape: `(cam,)`.
+
+        Returns:
+            tuple: A tuple containing
+                - (*torch.Tensor*): RGB images, shape: `(cam, H, W, 3)`.
+                - (*torch.Tensor*): Alphas, shape: `(cam, H, W, 1)`.
+                - (*dict*): Infos, a dictionary containing additional information.
+        """
+
+        # Merge renderings (we assume that the inside mouth splats are always behind the default)
+        render_images = render_images + (1-render_alphas) * inside_mouth_render_images
+        render_alphas = render_alphas = render_alphas + (
+            1-render_alphas) * inside_mouth_render_alphas
+
+        # Apply screen-space denoising
+        infos['raw_rendered_images'] = render_images
+        render_images = self.screen_space_denoiser(render_images, render_alphas)
+
+        # Apply background
+        image_height, image_width = render_images.shape[1:3]
+        background = repeat(
+            background,
+            "f -> cam H W f",
+            cam=render_images.shape[0],
+            H=image_height,
+            W=image_width,
+        )
+        render_images = render_images*render_alphas + (1-render_alphas) * background
+
+        # Apply color correction
+        if (color_correction is not None and
+                self.gaussian_splatting_settings.camera_color_correction):
+            # Reshape color_correction to (batch * height * width, 3, 3)
+            batch_size, height, width, _ = render_images.shape
+            color_correction = color_correction.expand(batch_size * height * width, -1, -1)
+
+            # Reshape images to (batch * height * width, 3, 1)
+            render_images = render_images.view(batch_size, height, width, 3, 1)
+            render_images = render_images.permute(0, 1, 2, 4, 3).contiguous()
+            render_images = render_images.view(-1, 3, 1)
+
+            # Perform batch matrix multiplication
+            corrected_colors = torch.bmm(color_correction, render_images)
+
+            # Reshape the result back to (batch, height, width, 3)
+            corrected_colors = corrected_colors.view(batch_size, height, width, 1, 3)
+            corrected_colors = corrected_colors.permute(0, 1, 2, 4, 3).contiguous()
+            corrected_colors = corrected_colors.view(batch_size, height, width, 3)
+            render_images = corrected_colors
+
+        # Apply learnable color correction
+        if hasattr(self, "learnable_color_correction") and camera_indices is not None:
+            render_images = self.learnable_color_correction.forward(camera_indices, render_images)
+
+        return render_images, render_alphas, infos
 
     def forward(
         self,
@@ -470,11 +688,9 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         color_correction: Float[torch.Tensor, "cam 3 3"] | None = None,
         cur_sh_degree: int | None = None,
         se3_transform: UnbatchedSE3Transform | None = None,
+        rigging_params: Float[torch.Tensor, 'n_vertices 3'] | None = None,
         background: Float[torch.Tensor, "3"] | None = None,
         camera_indices: Int[torch.Tensor, "cam"] | None = None,
-        flame_params: UnbatchedFlameParams | None = None,
-        audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
-        means_overwrite: Float[torch.Tensor, "n_gaussians 3"] | None = None,
     ) -> tuple[
             Float[torch.Tensor, "cam H W 3"],
             Float[torch.Tensor, "cam H W 1"],
@@ -492,15 +708,10 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
                 degree is used.
             se3_transform (torch.Tensor): SE3 transform matrix, shape: `(cam, 4, 4)`. If
                 `None`, no transformation is applied.
-            background (torch.Tensor): Background color, shape: `(3, )`. If `None`,
-                the default background is used.
+            rigging_params (torch.Tensor): The deformed flame vertices. Shape: `(n_vertices, 3)`.
+            background (torch.Tensor): Background color, shape: `(3,)`.
             camera_indices (torch.Tensor): Camera indices. Used to choose the correct camera
                 color correction matrix. Shape: `(cam,)`.
-            flame_params (torch.Tensor): Windowed flame parameters.
-            audio_features (torch.Tensor): Windowed audio features. Shape:
-                `(cam, window_size, 1024)`.
-            means_overwrite (torch.Tensor): Overwrite the means with this tensor. Useful for
-                smoothing the means. Shape: `(n_gaussians, 3)`.
 
         Returns:
             tuple: A tuple containing
@@ -546,13 +757,22 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             camera_indices=camera_indices,
             cur_sh_degree=cur_sh_degree,
             se3_transform=se3_transform,
-            flame_params=flame_params,
-            audio_features=audio_features,
+            rigging_params=rigging_params,
+            mode="default",
         )
-        if means_overwrite is not None:
-            means = means_overwrite
+        inside_mouth_means, inside_mouth_quats, inside_mouth_scales, inside_mouth_opacities, \
+            inside_mouth_colors, infos = self.pre_processing(
+                infos=infos,
+                cam_2_world=cam_2_world,
+                camera_indices=camera_indices,
+                cur_sh_degree=cur_sh_degree,
+                se3_transform=se3_transform,
+                rigging_params=rigging_params,
+                mode="inside_mouth",
+            )
 
         # ------------------------------- Rasterization ------------------------------- #
+        # Render the images
         ret = self.rasterize(
             means=means,
             quats=quats,
@@ -570,49 +790,51 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         )
         match self.gaussian_splatting_settings.rasterization_mode:
             case "default" | "3dgs":
-                images, alphas, new_infos = ret
+                render_images, render_alphas, new_infos = ret
             case "2dgs":
-                images, alphas, _, _, _, _, new_infos = ret
+                render_images, render_alphas, _, _, _, _, new_infos = ret
         infos = infos | new_infos
-        depth_maps = images[:, :, :, 3:]  # get depth maps
-        images = images[:, :, :, :3]  # get RGB channels
+        infos['default_render_images'] = render_images
+        depth_maps = render_images[:, :, :, 3:]  # get depth maps
+        render_images = render_images[:, :, :, :3]  # get RGB channels
+
+        # Render the inside mouth images
+        ret = self.rasterize(
+            means=inside_mouth_means,
+            quats=inside_mouth_quats,
+            scales=inside_mouth_scales,
+            opacities=inside_mouth_opacities,
+            colors=inside_mouth_colors,
+            render_mode="RGB",  # we don't perform depth blending for inside mouth splats
+            viewmats=world_2_cam,
+            Ks=intrinsics,
+            width=image_width,
+            height=image_height,
+            absgrad=self.gaussian_splatting_settings.densification_mode == 'default',
+            sh_degree=cur_sh_degree if not hasattr(self, "view_dependent_color_mlp") else None,
+            packed=False,
+        )
+        match self.gaussian_splatting_settings.rasterization_mode:
+            case "default" | "3dgs":
+                inside_mouth_render_images, inside_mouth_render_alphas, new_infos = ret
+            case "2dgs":
+                inside_mouth_render_images, inside_mouth_render_alphas, _, _, _, _, new_infos = ret
+        infos['inside_mouth_render_images'] = inside_mouth_render_images
+        infos = infos | new_infos
 
         # ------------------------------- Post-processing ------------------------------ #
-        # Apply screen-space denoising
-        infos['raw_rendered_images'] = images
-        images = self.screen_space_denoiser(images, alphas)
+        render_images, render_alphas, infos = self.post_processing(
+            infos=infos,
+            render_images=render_images,
+            render_alphas=render_alphas,
+            inside_mouth_render_images=inside_mouth_render_images,
+            inside_mouth_render_alphas=inside_mouth_render_alphas,
+            background=background,
+            color_correction=color_correction,
+            camera_indices=camera_indices,
+        )
 
-        # Apply background
-        background = repeat(
-            background, "f -> cam H W f", cam=images.shape[0], H=image_height, W=image_width)
-        images = images*alphas + (1-alphas) * background
-
-        # Apply color correction
-        if (color_correction is not None and
-                self.gaussian_splatting_settings.camera_color_correction):
-            # Reshape color_correction to (batch * height * width, 3, 3)
-            batch_size, height, width, _ = images.shape
-            color_correction = color_correction.expand(batch_size * height * width, -1, -1)
-
-            # Reshape images to (batch * height * width, 3, 1)
-            images = images.view(batch_size, height, width, 3, 1)
-            images = images.permute(0, 1, 2, 4, 3).contiguous()
-            images = images.view(-1, 3, 1)
-
-            # Perform batch matrix multiplication
-            corrected_colors = torch.bmm(color_correction, images)
-
-            # Reshape the result back to (batch, height, width, 3)
-            corrected_colors = corrected_colors.view(batch_size, height, width, 1, 3)
-            corrected_colors = corrected_colors.permute(0, 1, 2, 4, 3).contiguous()
-            corrected_colors = corrected_colors.view(batch_size, height, width, 3)
-            images = corrected_colors
-
-        # Apply learnable color correction
-        if hasattr(self, "learnable_color_correction") and camera_indices is not None:
-            images = self.learnable_color_correction.forward(camera_indices, images)
-
-        return images, alphas, depth_maps, infos
+        return render_images, render_alphas, depth_maps, infos
 
     @torch.no_grad()
     def render(
@@ -642,13 +864,13 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             rotation=DEFAULT_SE3_ROTATION.unsqueeze(0).cuda(),
             translation=DEFAULT_SE3_TRANSLATION.unsqueeze(0).cuda(),
         )
-        if hasattr(self, "render_flame_params"):
-            flame_params = UnbatchedFlameParams(
-                *(a[time_step:time_step
-                    + self.gaussian_splatting_settings.prior_window_size].to('cuda')
-                  for a in self.render_flame_params))
-        else:
-            flame_params = self._canonical_flame_params
+
+        # get the rigging params
+        sequence = self.viewer_sequence
+        frame = time_step if self.viewer_frame is None else self.viewer_frame
+        rigging_params = self.rigging_params.forward(sequence, frame)
+
+        # render
         image, _, depth, _ = self.forward(
             intrinsics=intrinsics,
             world_2_cam=None,
@@ -656,9 +878,8 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             image_height=image_height,
             image_width=image_width,
             se3_transform=se3,
-            flame_params=flame_params,
+            rigging_params=rigging_params,
         )
-
         if render_mode == 'color':
             return image[0].detach().cpu().numpy()
         else:
@@ -676,15 +897,6 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             depth = cmap(1 - depth)[:, :, :3]  # brighter should be closer
             return depth
 
-    @torch.no_grad()
-    def render_depth(
-        self,
-        camera_state: nerfview.CameraState,
-        img_wh: tuple[int, int],
-    ) -> Float[np.ndarray, "H W"]:
-        """Renders the depth image."""
-        raise NotImplementedError
-
     # ================================================================================ #
     #                                 Train / Val Steps                                #
     # ================================================================================ #
@@ -696,6 +908,9 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             self.max_sh_degree,
         )
 
+    #       - implement inside mouth masking
+    # TODO: do i need a rigidity loss? probably not, since my rigging params already take care of
+    #       it
     def compute_loss(
         self,
         rendered_images: Float[torch.Tensor, "cam H W 3"],
@@ -704,8 +919,22 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
         target_alphas: Float[torch.Tensor, "cam H W"],
         target_segmentation_mask: Float[torch.Tensor, "cam H W 3"],
         infos: dict,
+        mode: Literal["default", "merged"] = "default",
     ) -> dict[str, Float[torch.Tensor, '']]:
-        """ Computes the loss. """
+        """
+        Computes the loss. We will compute the loss once for the default rendering and once for
+        the merged rendering. The merged rendering is the default rendering with the inside mouth
+        branch added behind it.
+
+        Args:
+            rendered_images (torch.Tensor): Rendered images, shape: `(cam, H, W, 3)`.
+            rendered_alphas (torch.Tensor): Rendered alphas, shape: `(cam, H, W, 1)`.
+            target_images (torch.Tensor): Target images, shape: `(cam, H, W, 3)`.
+            target_alphas (torch.Tensor): Target alphas, shape: `(cam, H, W)`.
+            target_segmentation_mask (torch.Tensor): Target segmentation mask, shape: `(cam, H, W, 3)`.
+            infos (dict): Dictionary containing additional information.
+            mode (str): Mode, either 'default' or 'merged'.
+        """
         # set up
         loss_dict = {}
         loss = 0.0
@@ -714,6 +943,16 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             background_mask = torch.where(segmentation_classes == 0, 1, 0)
             jumper_mask = torch.where(segmentation_classes == 2, 1, 0)
             target_alphas = target_alphas * (1-jumper_mask) * (1-background_mask)
+        if mode == "merged":
+            # NOTE: the eyes are the only other part that is not just stretching and deforming
+            #       so it makes sense to include them here imo.
+            #       One of the disadvantages is that the eye lashes might get clipped.
+            # TODO: keep an eye on this (pun intended)
+            left_eye_mask = torch.where(segmentation_classes == 10, 1, 0)
+            right_eye_mask = torch.where(segmentation_classes == 11, 1, 0)
+            inner_mouth_mask = torch.where(segmentation_classes == 14, 1, 0)
+            target_alphas = target_alphas * (1-inner_mouth_mask) * (1-left_eye_mask) * (
+                1-right_eye_mask)
         alpha_map = repeat(target_alphas, "cam H W -> cam H W f", f=3)
         background = infos['background']
         background = repeat(
@@ -1152,10 +1391,17 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
     #                                 Viewer                                           #
     # ================================================================================ #
 
-    def start_viewer(self,
-                     port: int | None = None,
-                     mode: Literal['training', 'rendering'] = 'rendering') -> None:
+    def start_viewer(
+        self,
+        port: int | None = None,
+        mode: Literal['training', 'rendering'] = 'rendering',
+        sequence: int = CANONICAL_SEQUENCE_FRAME[0],
+        frame: int | None = CANONICAL_SEQUENCE_FRAME[1],
+    ) -> None:
         """ Starts the viewer. """
+        self.sequence = sequence
+        self.frame = frame
+
         if port is None:
 
             def find_free_port():
@@ -1166,9 +1412,9 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             port = find_free_port()
         self.server = viser.ViserServer(port=port, verbose=True)
         self.eval()
-        num_frames = 1 if not hasattr(
-            self, "render_flame_params") else self.render_flame_params.expr.shape[
-                0] - self.gaussian_splatting_settings.prior_window_size
+        sm = SequenceManager(sequence)
+        n_frames = len(sm)
+        num_frames = 1 if frame is not None else n_frames
         self.viewer = nerfview.Viewer(
             server=self.server,
             render_fn=self.render,

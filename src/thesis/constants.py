@@ -95,6 +95,8 @@ Categories:
     - 14: inner mouth
 """
 
+CANONICAL_SEQUENCE_FRAME = (3, 218)
+""" Canonical sequence and frame index """
 CANONICAL_FLAME_PARAMS = (torch.tensor([[
     2.2544e-02, -5.9882e-01, -7.3308e-01, 3.2558e-01, 1.2412e+00, -1.0464e-01, 1.5460e-01,
     3.5699e-01, -8.5423e-01, 9.4808e-02, -8.5080e-01, -4.7664e-01, 8.8770e-01, 1.4933e+00,
