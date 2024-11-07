@@ -52,7 +52,7 @@ from thesis.deformation_field.per_gaussian_fine_tuning_2 import (
     RotationAndScaleAdjustments,
 )
 from thesis.deformation_field.rigging_params import RiggingParams
-from thesis.flame import FlameHead
+from thesis.flame import FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
@@ -134,11 +134,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         self.enable_viewer = enable_viewer
 
         # Load flame params
-        canonical_flame_params = UnbatchedFlameParams(
+        self.canonical_flame_params = UnbatchedFlameParams(
             *(a.to('cuda') for a in CANONICAL_FLAME_PARAMS))
-        self._canonical_flame_params = UnbatchedFlameParams(
-            *(a.repeat(gaussian_splatting_settings.prior_window_size, 1)
-              for a in canonical_flame_params))
 
         # Initialize splats
         initialization_mode = gaussian_splatting_settings.initialization_mode
@@ -168,7 +165,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             case "flame":
                 self.splats = nn.ParameterDict(
                     flame_initialization(
-                        flame_params=canonical_flame_params,
+                        flame_params=self.canonical_flame_params,
                         scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
@@ -184,14 +181,15 @@ class RiggedGaussianSplatting(pl.LightningModule):
                                  f"{gaussian_splatting_settings.initialization_mode}")
 
         # Initialize the inside mouth splats
-        self.inside_mouth_splats = inside_mouth_flame_initialization(
-            flame_params=canonical_flame_params,
-            scene_scale=gaussian_splatting_settings.scene_scale,
-            feature_dim=gaussian_splatting_settings.feature_dim,
-            colors_sh_degree=gaussian_splatting_settings.sh_degree,
-            initialize_spherical_harmonics=not gaussian_splatting_settings
-            .use_view_dependent_color_mlp,
-        )
+        self.inside_mouth_splats = nn.ParameterDict(
+            inside_mouth_flame_initialization(
+                flame_params=self.canonical_flame_params,
+                scene_scale=gaussian_splatting_settings.scene_scale,
+                feature_dim=gaussian_splatting_settings.feature_dim,
+                colors_sh_degree=gaussian_splatting_settings.sh_degree,
+                initialize_spherical_harmonics=not gaussian_splatting_settings
+                .use_view_dependent_color_mlp,
+            ))
 
         # Initialize the densification strategy
         refine_stop_iteration = gaussian_splatting_settings.refine_stop_iteration
@@ -233,8 +231,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
         # deformation_field (pre-processing)
         # non-optimizable
-        self.flame_head = FlameHead()
-        self.flame_knn = FlameKNN(k=3, canonical_params=canonical_flame_params)
+        self.flame_head = FlameHeadWithInnerMouth()
+        self.flame_knn = FlameKNN(k=3, canonical_params=self.canonical_flame_params)
         self.flame_mesh_extractor = FlameMeshSE3Extraction(self.flame_head)
 
         # Rigging parameters
@@ -388,28 +386,23 @@ class RiggedGaussianSplatting(pl.LightningModule):
         # ---> pre-processing optimizers
         other_optimizers = {}
         if hasattr(self, "rigging_params"):
-            enable_rigging_params = 1.0 if mode in ['rigged', 'dynamic'] else 0.0
-            enable_inside_mouth_rigging_params = 1.0 if mode in [
-                'inside_mouth', 'rigged', 'dynamic'
-            ] else 0.0
-            other_optimizers["rigging_params_flame_vertices"] = SparseAdam(
-                self.rigging_params.flame_code_books.parameters(),
-                lr=self.learning_rates.rigging_params_flame_vertices_lr * batch_scaling
-                * enable_rigging_params,
-            )
-            other_optimizers["rigging_params_inner_mouth_vertices"] = SparseAdam(
-                self.rigging_params.inner_mouth_code_books.parameters(),
-                lr=self.learning_rates.rigging_params_inner_mouth_vertices_lr * batch_scaling
-                * enable_inside_mouth_rigging_params,
-            )
+            if mode in ['rigged', 'dynamic']:
+                other_optimizers["rigging_params_flame_vertices"] = SparseAdam(
+                    self.rigging_params.flame_code_books.parameters(),
+                    lr=self.learning_rates.rigging_params_flame_vertices_lr * batch_scaling,
+                )
+            if mode in ['inside_mouth', 'rigged', 'dynamic']:
+                other_optimizers["rigging_params_inner_mouth_vertices"] = SparseAdam(
+                    self.rigging_params.inner_mouth_code_books.parameters(),
+                    lr=self.learning_rates.rigging_params_inner_mouth_vertices_lr * batch_scaling,
+                )
 
         if hasattr(self, "rotation_and_scale_adjustments"):
-            enable_rotation_and_scale_adjustments = 1.0 if mode in ['rigged', 'dynamic'] else 0.0
-            other_optimizers["rotation_and_scale_adjustments"] = Adam(
-                self.rotation_and_scale_adjustments.parameters(),
-                lr=self.learning_rates.motion_adjustment_lr * batch_scaling
-                * enable_rotation_and_scale_adjustments,
-            )
+            if mode in ['rigged', 'dynamic']:
+                other_optimizers["rotation_and_scale_adjustments"] = Adam(
+                    self.rotation_and_scale_adjustments.parameters(),
+                    lr=self.learning_rates.motion_adjustment_lr * batch_scaling,
+                )
 
         if hasattr(self, "view_dependent_color_mlp"):
             other_optimizers["view_dependent_color_mlp_head"] = Adam(
@@ -428,7 +421,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 self.learnable_color_correction.parameters(),
                 lr=self.learning_rates.color_correction_lr * batch_scaling,
             )
-        if hasattr(self, "screen_space_denoiser"):
+        if isinstance(self.screen_space_denoiser, nn.Module):
             other_optimizers["screen_space_denoiser"] = Adam(
                 self.screen_space_denoiser.parameters(),
                 lr=self.learning_rates.screen_space_denoiser_lr * batch_scaling,
@@ -442,7 +435,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         schedulers['inside_mouth_means'] = torch.optim.lr_scheduler.ExponentialLR(
             inside_mouth_splat_optimizers["means"],
             gamma=0.01**(1.0 / self.gaussian_splatting_settings.train_iterations))
-        optimizer_list = list(splat_optimizers.values()) + list(other_optimizers.values())
+        optimizer_list = list(splat_optimizers.values()) + list(
+            inside_mouth_splat_optimizers.values()) + list(other_optimizers.values())
         self.splat_optimizer_keys = list(splat_optimizers.keys())
         self.inside_mouth_splat_optimizer_keys = list(inside_mouth_splat_optimizers.keys())
         scheduler_list = list(schedulers.values())
@@ -528,12 +522,14 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     [self.inside_mouth_splats["sh0"], self.inside_mouth_splats["shN"]], 1)
 
         # ---> Apply the deformation field
-        if rigging_params is not None:
+        if rigging_params is not None and self.training_mode in [
+                'rigged', 'dynamic', 'inside_mouth'
+        ]:
             # query deformation_field for windowed rotation and translations
             indices, _ = self.flame_knn.forward(means)
-            canonical_vertices = self.flame_head.forward(self._canonical_flame_params)
-            deformed_vertices = rigging_params
-            vertex_rotations, vertex_translations = self.flame_mesh_extractor(
+            canonical_vertices = self.flame_head.forward(self.canonical_flame_params)
+            deformed_vertices = rigging_params.unsqueeze(0)
+            vertex_rotations, vertex_translations = self.flame_mesh_extractor.forward(
                 canonical_vertices, deformed_vertices)
             vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
             gaussian_rotations = self.flame_knn.gather(
@@ -556,6 +552,11 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 barycentric_weights, gaussian_translations)  # (n_gaussians, window_size, 3)
             gaussian_translations = gaussian_translations.permute(
                 1, 0, 2)  # (window_size, n_gaussians, 3)
+
+            # remove window size
+            gaussian_rotations = gaussian_rotations.squeeze(0)
+            gaussian_translations = gaussian_translations.squeeze(0)
+            barycentric_weights = barycentric_weights.squeeze(0)
 
             # per gaussian fine tuning
             if self.gaussian_splatting_settings.per_gaussian_motion_adjustment:
@@ -945,7 +946,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             background_mask = torch.where(segmentation_classes == 0, 1, 0)
             jumper_mask = torch.where(segmentation_classes == 2, 1, 0)
             target_alphas = target_alphas * (1-jumper_mask) * (1-background_mask)
-        if mode == "merged":
+        if mode == "default":
             # NOTE: the eyes are the only other part that is not just stretching and deforming
             #       so it makes sense to include them here imo.
             #       One of the disadvantages is that the eye lashes might get clipped.
@@ -1254,14 +1255,14 @@ class RiggedGaussianSplatting(pl.LightningModule):
             optimizers=splat_optimizers,
             state=self.strategy_state,
             step=self.step,
-            info=infos,
+            info=infos['default_infos'],
         )
         self.inside_mouth_strategy.step_pre_backward(
             params=self.inside_mouth_splats,
             optimizers=splat_optimizers,
             state=self.strategy_state,
             step=self.step,
-            info=infos,
+            info=infos['inside_mouth_infos'],
         )
 
         # Loss computation and logging
@@ -1271,8 +1272,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
             denoised_images = None
 
         loss_dict = self.compute_loss(
-            rendered_images=infos['default_render_images'],
-            rendered_alphas=infos['default_render_alphas'],
+            rendered_images=infos['default_rendered_images'],
+            rendered_alphas=infos['default_rendered_alphas'],
             target_images=batch.image,
             target_alphas=batch.alpha_map,
             target_segmentation_mask=batch.segmentation_mask,
@@ -1292,6 +1293,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         )
         loss_dict = loss_dict | merged_loss_dict
         loss = loss_dict["default/loss"] + loss_dict["merged/loss"]
+        # loss = merged_loss_dict["merged/loss"]
+        # loss_dict = merged_loss_dict
 
         for key, value in loss_dict.items():
             self.log(f'train_{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
@@ -1318,7 +1321,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         self.manual_backward(loss)
         for opt in optimizers:
             opt.step()
-        schedulers.step()
+        for sched in schedulers:
+            sched.step()
 
         # Post-backward densification
         match self.gaussian_splatting_settings.densification_mode:
@@ -1344,7 +1348,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     state=self.strategy_state,
                     step=self.step,
                     info=infos['default_infos'],
-                    lr=schedulers.get_last_lr()[0],
+                    lr=schedulers[0].get_last_lr()[0],
                 )
                 self.inside_mouth_strategy.step_post_backward(
                     params=self.inside_mouth_splats,
@@ -1352,7 +1356,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     state=self.strategy_state,
                     step=self.step,
                     info=infos['inside_mouth_infos'],
-                    lr=schedulers.get_last_lr()[0],
+                    lr=schedulers[1].get_last_lr()[0],
                 )
             case _:
                 raise ValueError("Unknown densification mode: "
@@ -1369,8 +1373,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
             )
             # default, inside mouth
             self.log_image(
-                left_image=infos['default_render_images'][0],
-                right_image=infos['inside_mouth_render_images'][0],
+                left_image=infos['default_rendered_images'][0],
+                right_image=infos['inside_mouth_rendered_images'][0],
                 step=self.step,
                 name="train/default_and_inside_mouth",
             )
@@ -1430,7 +1434,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
         t = time.time()
 
         # Forward pass
-
         rigging_params = self.rigging_params.forward(batch.sequence_id, batch.time_step)
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             intrinsics=batch.intrinsics,
@@ -1452,8 +1455,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
             denoised_images = None
 
         loss_dict = self.compute_loss(
-            rendered_images=infos['default_render_images'],
-            rendered_alphas=infos['default_render_alphas'],
+            rendered_images=infos['default_rendered_images'],
+            rendered_alphas=infos['default_rendered_alphas'],
             target_images=batch.image,
             target_alphas=batch.alpha_map,
             target_segmentation_mask=batch.segmentation_mask,
@@ -1488,8 +1491,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
             )
             # default, inside mouth
             self.log_image(
-                left_image=infos['default_render_images'][0],
-                right_image=infos['inside_mouth_render_images'][0],
+                left_image=infos['default_rendered_images'][0],
+                right_image=infos['inside_mouth_rendered_images'][0],
                 step=self.step,
                 name="val/default_and_inside_mouth",
             )
@@ -1535,8 +1538,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         frame: int | None = CANONICAL_SEQUENCE_FRAME[1],
     ) -> None:
         """ Starts the viewer. """
-        self.sequence = sequence
-        self.frame = frame
+        self.viewer_sequence = sequence
+        self.viewer_frame = frame
 
         if port is None:
 
@@ -1649,7 +1652,7 @@ def train_static(
         port = model.start_viewer(mode="training", sequence=sequence, frame=time_step, port=port)
 
     # train
-    logger = TensorBoardLogger("tb_logs/video", name=config.name)
+    logger = TensorBoardLogger("tb_logs/rigid_gs/static", name=config.name)
     trainer = pl.Trainer(
         logger=logger,
         max_epochs=None,

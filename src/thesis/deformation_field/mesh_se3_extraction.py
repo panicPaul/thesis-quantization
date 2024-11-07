@@ -160,6 +160,7 @@ def extract_se3_from_mesh(
         gather_neighbors_vertices, in_dims=(0, None, None))  # add batch dimensions
 
     # Gather neighbors for canonical and deformed vertices
+    n_neighborless_vertices = canonical_vertices.shape[1] - neighbors.shape[0]
     canonical_point_cloud = gather_neighbors_batched(canonical_vertices, neighbors, neighbors_mask)
     deformed_point_cloud = gather_neighbors_batched(deformed_vertices, neighbors, neighbors_mask)
 
@@ -167,9 +168,15 @@ def extract_se3_from_mesh(
     rotation = torch.vmap(torch.vmap(unbatched_kabsch_umeyama,))(  # batch  # vertices
         canonical_point_cloud,
         deformed_point_cloud,
-        canonical_vertices,
-        deformed_vertices,
+        canonical_vertices[:, :-n_neighborless_vertices],
+        deformed_vertices[:, :-n_neighborless_vertices],
     )
+    # pad the remaining vertices with identity
+    identity_rotation = torch.eye(
+        3, device=rotation.device).unsqueeze(0).unsqueeze(0)  # (time, vertices, 3, 3)
+    identity_rotation = identity_rotation.expand(rotation.shape[0], n_neighborless_vertices, 3, 3)
+    rotation = torch.cat([rotation, identity_rotation], dim=1)
+
     rotation = rotation_matrix_to_quaternion(rotation)
     translation = deformed_vertices - canonical_vertices
 

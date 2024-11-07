@@ -62,7 +62,8 @@ class SingleSequenceDataset(Dataset):
         return (self.end_idx - self.start_idx) * self.length_multiplier
 
     def __getitem__(self, idx: int) -> dc.SingleFrameData:
-        idx = (idx + self.start_idx) % (self.end_idx - self.start_idx)
+        idx = idx % (self.end_idx - self.start_idx)
+        idx += self.start_idx
         return self.sequence_manager.get_single_frame(idx, self.n_cameras_per_frame)
 
 

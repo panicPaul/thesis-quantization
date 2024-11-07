@@ -226,7 +226,9 @@ def inside_mouth_flame_initialization(
     flame_head.to(flame_params.expr.device)
     vertices = flame_head.forward(flame_params)
     inside_mouth_indices = flame_head.inner_mouth_indices
-    vertices = vertices[:, inside_mouth_indices]
+    eyeball_indices = flame_head.mask.v.eyeballs
+    indices = torch.cat([inside_mouth_indices, eyeball_indices])
+    vertices = vertices[:, indices]
 
     means = vertices.squeeze(0)
     assert means.ndim == 2, 'Means should have shape (num_vertices, 3)'
