@@ -65,25 +65,6 @@ class SingleSequenceDataset(Dataset):
         idx = (idx + self.start_idx) % (self.end_idx - self.start_idx)
         return self.sequence_manager.get_single_frame(idx, self.n_cameras_per_frame)
 
-    def prepare_data(self,
-                     batch: dc.SingleFrameData,
-                     device: torch.device | str = "cuda") -> dc.SingleFrameData:
-        se3_transform = dc.UnbatchedSE3Transform(
-            rotation=batch.se3_transform.rotation.to(device),
-            translation=batch.se3_transform.translation.to(device),
-        )
-        return dc.SingleFrameData(
-            image=batch.image.to(device),
-            mask=batch.mask.to(device),
-            intrinsics=batch.intrinsics.to(device),
-            world_2_cam=batch.world_2_cam.to(device),
-            color_correction=batch.color_correction.to(device),
-            se3_transform=se3_transform,
-            sequence_id=batch.sequence_id.to(device),
-            time_step=batch.time_step.to(device),
-            camera_indices=batch.camera_indices.to(device),
-        )
-
 
 # ==================================================================================== #
 #                              Multi-sequence Dataset                                  #

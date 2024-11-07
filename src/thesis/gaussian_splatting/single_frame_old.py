@@ -979,7 +979,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
 
     def start_viewer(self,
                      port: int | None = None,
-                     mode: Literal['training', 'rendering'] = 'rendering') -> None:
+                     mode: Literal['training', 'rendering'] = 'rendering') -> int:
         """ Starts the viewer. """
         if port is None:
 
@@ -997,6 +997,7 @@ class GaussianSplattingSingleFrame(pl.LightningModule):
             mode=mode,
             num_frames=1,
         )
+        return port
 
 
 # ==================================================================================== #

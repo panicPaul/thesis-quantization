@@ -38,6 +38,7 @@ from thesis.constants import (
 from thesis.data_management import (
     MultiSequenceDataset,
     SequenceManager,
+    SingleSequenceDataset,
     UnbatchedFlameParams,
 )
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
@@ -82,9 +83,19 @@ class RiggedGaussianSplatting(pl.LightningModule):
         enable_viewer: bool = True,
         train_sequences: list[int] | None = TRAIN_SEQUENCES,
         ckpt_path: str | None = None,
+        training_mode: Literal['static', 'rigged', 'dynamic', 'inside_mouth'] = 'static',
     ) -> None:
         """
-        Initializes the Gaussian splatting model.
+        Initializes the Gaussian splatting model. You must choose one of the following
+        training modes:
+
+            - static:       We optimize the splats directly but freeze the rigging parameters and
+                            the per-gaussian motion adjustments.
+            - rigged:       We optimize the rigging parameters and the per-gaussian motion
+                            adjustments but freeze the splats.
+            - dynamic:      We optimize everything.
+            - inside_mouth: The splats and rigging parameters are frozen for the normal
+                            splats, but the inside mouth splats and rigging params are optimized.
 
         Args:
             sequence (int): Sequence to train on.
@@ -97,6 +108,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             checkpoint_path (str | None): Path to the checkpoint. Needs to be provided if
                 loading a pre-trained model, since torch will throw size mismatch errors
                 otherwise.
+            training_mode (str): The mode of the optimizer.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -104,6 +116,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
         if train_sequences is None:
             train_sequences = TRAIN_SEQUENCES
         self.train_sequences = train_sequences
+        self.training_mode = training_mode
 
         # Save the settings
         self.learning_rates = learning_rates
@@ -280,29 +293,12 @@ class RiggedGaussianSplatting(pl.LightningModule):
         self.lpips = LearnedPerceptualImagePatchSimilarity(
             net_type=gaussian_splatting_settings.lpips_network, normalize=True)
 
-    def configure_optimizers(
-        self,
-        mode: Literal['static', 'rigged', 'dynamic', 'inside_mouth'] = 'static',
-    ):
+    def configure_optimizers(self):
         """
-        Configures the optimizer. We have four modes:
-
-            - static:       We optimize the splats directly but freeze the rigging parameters and
-                            the per-gaussian motion adjustments.
-            - rigged:       We optimize the rigging parameters and the per-gaussian motion
-                            adjustments but freeze the splats.
-            - dynamic:      We optimize everything.
-            - inside_mouth: The splats and rigging parameters are frozen for the normal
-                            splats, but the inside mouth splats and rigging params are optimized.
-
-        The post-processing modules are always optimized, as is the view-dependent color MLP.
-
-        Args:
-            mode (str): The mode of the optimizer. Can be either 'static', rigged' or 'dynamic'.
-
         Returns:
             A tuple containing the splat optimizers and other optimizers.
         """
+        mode = self.training_mode
 
         # ---> splat optimizers
         batch_size = self.gaussian_splatting_settings.camera_batch_size
@@ -448,6 +444,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             gamma=0.01**(1.0 / self.gaussian_splatting_settings.train_iterations))
         optimizer_list = list(splat_optimizers.values()) + list(other_optimizers.values())
         self.splat_optimizer_keys = list(splat_optimizers.keys())
+        self.inside_mouth_splat_optimizer_keys = list(inside_mouth_splat_optimizers.keys())
         scheduler_list = list(schedulers.values())
         self.n_optimizers = len(optimizer_list)
         return optimizer_list, scheduler_list
@@ -630,6 +627,11 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 - (*torch.Tensor*): Alphas, shape: `(cam, H, W, 1)`.
                 - (*dict*): Infos, a dictionary containing additional information.
         """
+        # Add images to the infos
+        infos['default_rendered_images'] = render_images
+        infos['default_rendered_alphas'] = render_alphas
+        infos['inside_mouth_rendered_images'] = inside_mouth_render_images
+        infos['inside_mouth_rendered_alphas'] = inside_mouth_render_alphas
 
         # Merge renderings (we assume that the inside mouth splats are always behind the default)
         render_images = render_images + (1-render_alphas) * inside_mouth_render_images
@@ -637,7 +639,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             1-render_alphas) * inside_mouth_render_alphas
 
         # Apply screen-space denoising
-        infos['raw_rendered_images'] = render_images
+        infos['pre_denoised_rendered_images'] = render_images
         render_images = self.screen_space_denoiser(render_images, render_alphas)
 
         # Apply background
@@ -793,8 +795,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 render_images, render_alphas, new_infos = ret
             case "2dgs":
                 render_images, render_alphas, _, _, _, _, new_infos = ret
-        infos = infos | new_infos
-        infos['default_render_images'] = render_images
+        infos['default_infos'] = new_infos
         depth_maps = render_images[:, :, :, 3:]  # get depth maps
         render_images = render_images[:, :, :, :3]  # get RGB channels
 
@@ -819,8 +820,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 inside_mouth_render_images, inside_mouth_render_alphas, new_infos = ret
             case "2dgs":
                 inside_mouth_render_images, inside_mouth_render_alphas, _, _, _, _, new_infos = ret
-        infos['inside_mouth_render_images'] = inside_mouth_render_images
-        infos = infos | new_infos
+        infos['inside_mouth_infos'] = new_infos
 
         # ------------------------------- Post-processing ------------------------------ #
         render_images, render_alphas, infos = self.post_processing(
@@ -920,6 +920,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
         target_segmentation_mask: Float[torch.Tensor, "cam H W 3"],
         infos: dict,
         mode: Literal["default", "merged"] = "default",
+        denoised_images: Float[torch.Tensor, "cam H W 3"] | None = None,
     ) -> dict[str, Float[torch.Tensor, '']]:
         """
         Computes the loss. We will compute the loss once for the default rendering and once for
@@ -934,6 +935,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             target_segmentation_mask (torch.Tensor): Target segmentation mask, shape: `(cam, H, W, 3)`.
             infos (dict): Dictionary containing additional information.
             mode (str): Mode, either 'default' or 'merged'.
+            denoised_images (torch.Tensor): Denoised images, shape: `(cam, H, W, 3)`.
         """
         # set up
         loss_dict = {}
@@ -961,25 +963,26 @@ class RiggedGaussianSplatting(pl.LightningModule):
             cam=alpha_map.shape[0],
             H=alpha_map.shape[1],
             W=alpha_map.shape[2])
-        raw_rendered_images = infos['raw_rendered_images']
         target_images = target_images*alpha_map + (1-alpha_map) * background
+        rendered_images = rendered_images*alpha_map + (1-alpha_map) * background
 
         # raw l1 foreground loss
         if self.gaussian_splatting_settings.l1_image_loss is not None:
             l1_foreground_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images), dim=-1).mean()
+                torch.abs(rendered_images - target_images), dim=-1).mean()
             loss_dict["l1_foreground_loss"] = l1_foreground_loss
             loss = loss + l1_foreground_loss * self.gaussian_splatting_settings.l1_image_loss
         # raw ssim foreground loss
         if self.gaussian_splatting_settings.ssim_image_loss is not None:
-            pred = rearrange(raw_rendered_images, "cam H W f -> cam f H W")
+            pred = rearrange(rendered_images, "cam H W f -> cam f H W")
             tgt = rearrange(target_images, "cam H W f -> cam f H W")
             ssim_foreground_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["ssim_foreground_loss"] = ssim_foreground_loss
             loss = loss + ssim_foreground_loss * self.gaussian_splatting_settings.ssim_image_loss
         # denoised ssim foreground loss
         if self.gaussian_splatting_settings.ssim_denoised_image_loss is not None:
-            pred = rearrange(rendered_images, "cam H W f -> cam f H W")
+            assert denoised_images is not None
+            pred = rearrange(denoised_images, "cam H W f -> cam f H W")
             tgt = rearrange(target_images, "cam H W f -> cam f H W")
             ssim_denoised_foreground_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["ssim_denoised_foreground_loss"] = ssim_denoised_foreground_loss
@@ -987,7 +990,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 * self.gaussian_splatting_settings.ssim_denoised_image_loss
         # lpips foreground loss
         if self.gaussian_splatting_settings.lpips_image_loss is not None:
-            pred = rearrange(raw_rendered_images, "cam H W f -> cam f H W").clip(0, 1)
+            pred = rearrange(rendered_images, "cam H W f -> cam f H W").clip(0, 1)
             tgt = rearrange(target_images, "cam H W f -> cam f H W")
             lpips_foreground_loss = self.lpips.forward(pred, tgt).mean()
             loss_dict["lpips_foreground_loss"] = lpips_foreground_loss
@@ -1044,7 +1047,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             face_nose_mask = torch.logical_or(face_mask, nose_mask)
             face_nose_mask = repeat(face_nose_mask, "cam H W -> cam H W f", f=3)
             face_nose_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * face_nose_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * face_nose_mask, dim=-1).mean()
             loss_dict["face_nose_l1"] = face_nose_loss
             loss = loss + face_nose_loss * self.gaussian_splatting_settings.face_nose_l1_loss
         # hair l1
@@ -1052,7 +1055,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             hair_mask = torch.where(segmentation_classes == 4, 1, 0)
             hair_mask = repeat(hair_mask, "cam H W -> cam H W f", f=3)
             hair_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * hair_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * hair_mask, dim=-1).mean()
             loss_dict["hair_l1"] = hair_loss
             loss = loss + hair_loss * self.gaussian_splatting_settings.hair_l1_loss
         # neck l1
@@ -1060,7 +1063,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             neck_mask = torch.where(segmentation_classes == 1, 1, 0)
             neck_mask = repeat(neck_mask, "cam H W -> cam H W f", f=3)
             neck_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * neck_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * neck_mask, dim=-1).mean()
             loss_dict["neck_l1"] = neck_loss
             loss = loss + neck_loss * self.gaussian_splatting_settings.neck_l1_loss
         # ears l1
@@ -1070,7 +1073,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             ears_mask = torch.logical_or(left_ear_mask, right_ear_mask)
             ears_mask = repeat(ears_mask, "cam H W -> cam H W f", f=3)
             ears_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * ears_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * ears_mask, dim=-1).mean()
             loss_dict["ears_l1"] = ears_loss
             loss = loss + ears_loss * self.gaussian_splatting_settings.ears_l1_loss
         # lips l1
@@ -1080,7 +1083,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             lips_mask = torch.logical_or(upper_lip_nask, lower_lip_mask)
             lips_mask = repeat(lips_mask, "cam H W -> cam H W f", f=3)
             lips_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * lips_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * lips_mask, dim=-1).mean()
             loss_dict["lips_l1"] = lips_loss
             loss = loss + lips_loss * self.gaussian_splatting_settings.lips_l1_loss
         # eyes l1
@@ -1090,7 +1093,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             eyes_mask = torch.logical_or(left_eye_mask, right_eye_mask)
             eyes_mask = repeat(eyes_mask, "cam H W -> cam H W f", f=3)
             eyes_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * eyes_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * eyes_mask, dim=-1).mean()
             loss_dict["eyes_l1"] = eyes_loss
             loss = loss + eyes_loss * self.gaussian_splatting_settings.eyes_l1_loss
         # inner mouth l1
@@ -1098,7 +1101,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             inner_mouth_mask = torch.where(segmentation_classes == 14, 1, 0)
             inner_mouth_mask = repeat(inner_mouth_mask, "cam H W -> cam H W f", f=3)
             inner_mouth_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * inner_mouth_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * inner_mouth_mask, dim=-1).mean()
             loss_dict["inner_mouth_l1"] = inner_mouth_loss
             loss = loss + inner_mouth_loss * self.gaussian_splatting_settings.inner_mouth_l1_loss
         # eyebrows l1
@@ -1108,14 +1111,14 @@ class RiggedGaussianSplatting(pl.LightningModule):
             eyebrows_mask = torch.logical_or(left_eyebrow_mask, right_eyebrow_mask)
             eyebrows_mask = repeat(eyebrows_mask, "cam H W -> cam H W f", f=3)
             eyebrows_loss = torch.sum(
-                torch.abs(raw_rendered_images - target_images) * eyebrows_mask, dim=-1).mean()
+                torch.abs(rendered_images - target_images) * eyebrows_mask, dim=-1).mean()
             loss_dict["eyebrows_l1"] = eyebrows_loss
             loss = loss + eyebrows_loss * self.gaussian_splatting_settings.eyebrows_l1_loss
         # hair ssim
         if self.gaussian_splatting_settings.hair_ssim_loss is not None:
             hair_mask = torch.where(segmentation_classes == 4, 1, 0)
             hair_mask = repeat(hair_mask, "cam H W -> cam H W f", f=3)
-            pred = rearrange(raw_rendered_images * hair_mask, "cam H W f -> cam f H W")
+            pred = rearrange(rendered_images * hair_mask, "cam H W f -> cam f H W")
             tgt = rearrange(target_images * hair_mask, "cam H W f -> cam f H W")
             hair_ssim_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["hair_ssim"] = hair_ssim_loss
@@ -1126,7 +1129,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             lower_lip_mask = torch.where(segmentation_classes == 8, 1, 0)
             lips_mask = torch.logical_or(upper_lip_nask, lower_lip_mask)
             lips_mask = repeat(lips_mask, "cam H W -> cam H W f", f=3)
-            pred = rearrange(raw_rendered_images * lips_mask, "cam H W f -> cam f H W")
+            pred = rearrange(rendered_images * lips_mask, "cam H W f -> cam f H W")
             tgt = rearrange(target_images * lips_mask, "cam H W f -> cam f H W")
             lips_ssim_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["lips_ssim"] = lips_ssim_loss
@@ -1137,7 +1140,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             right_eye_mask = torch.where(segmentation_classes == 11, 1, 0)
             eyes_mask = torch.logical_or(left_eye_mask, right_eye_mask)
             eyes_mask = repeat(eyes_mask, "cam H W -> cam H W f", f=3)
-            pred = rearrange(raw_rendered_images * eyes_mask, "cam H W f -> cam f H W")
+            pred = rearrange(rendered_images * eyes_mask, "cam H W f -> cam f H W")
             tgt = rearrange(target_images * eyes_mask, "cam H W f -> cam f H W")
             eyes_ssim_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["eyes_ssim"] = eyes_ssim_loss
@@ -1146,7 +1149,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
         if self.gaussian_splatting_settings.inner_mouth_ssim_loss is not None:
             inner_mouth_mask = torch.where(segmentation_classes == 14, 1, 0)
             inner_mouth_mask = repeat(inner_mouth_mask, "cam H W -> cam H W f", f=3)
-            pred = rearrange(raw_rendered_images * inner_mouth_mask, "cam H W f -> cam f H W")
+            pred = rearrange(rendered_images * inner_mouth_mask, "cam H W f -> cam f H W")
             tgt = rearrange(target_images * inner_mouth_mask, "cam H W f -> cam f H W")
             inner_mouth_ssim_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["inner_mouth_ssim"] = inner_mouth_ssim_loss
@@ -1158,21 +1161,61 @@ class RiggedGaussianSplatting(pl.LightningModule):
             right_eyebrow_mask = torch.where(segmentation_classes == 13, 1, 0)
             eyebrows_mask = torch.logical_or(left_eyebrow_mask, right_eyebrow_mask)
             eyebrows_mask = repeat(eyebrows_mask * eyebrows_mask, "cam H W -> cam H W f", f=3)
-            pred = rearrange(raw_rendered_images * eyebrows_mask, "cam H W f -> cam f H W")
+            pred = rearrange(rendered_images * eyebrows_mask, "cam H W f -> cam f H W")
             tgt = rearrange(target_images, "cam H W f -> cam f H W")
             eyebrows_ssim_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["eyebrows_ssim"] = eyebrows_ssim_loss
             loss = loss + eyebrows_ssim_loss * self.gaussian_splatting_settings.eyebrows_ssim_loss
 
         loss_dict["loss"] = loss
-        return loss_dict
+
+        # add the mode to the key
+        ret = {}
+        for key, value in loss_dict.items():
+            key = f"{mode}/{key}"
+            ret[key] = value
+        return ret
+
+    def log_image(
+        self,
+        left_image: Float[torch.Tensor, "H W 3"],
+        right_image: Float[torch.Tensor, "H W 3"],
+        step: int,
+        name: str,
+    ) -> None:
+        """
+        Logs an image to tensorboard.
+
+        Args:
+            gt_image (torch.Tensor): The ground truth image.
+            pred_image (torch.Tensor): The predicted image.
+            step (int): The current step.
+            name (str): The name of the image.
+        """
+        canvas = (
+            torch.concatenate(
+                [left_image.clamp(0, 1), right_image.clamp(0, 1)],
+                dim=1,
+            ).detach().cpu().numpy())
+        canvas = (canvas * 255).astype(np.uint8)
+        writer = self.logger.experiment
+        writer.add_image(name, canvas, step, dataformats="HWC")
 
     def training_step(
         self,
-        batch: tuple[SingleFrameData, UnbatchedFlameParams, Float[torch.Tensor, 'window 1024']],
+        batch: SingleFrameData,
         batch_idx: int,
     ) -> torch.Tensor:
-        """Training step."""
+        """
+        Training step.
+
+        Args:
+            batch (SingleFrameData): The batch.
+            batch_idx (int): The batch index.
+
+        Returns:
+            torch.Tensor: The loss.
+        """
 
         # Pause the viewer if needed
         if self.enable_viewer:
@@ -1182,27 +1225,27 @@ class RiggedGaussianSplatting(pl.LightningModule):
             tic = time.time()
         t = time.time()
 
-        # Unpack the batch
-        frame, flame_params, audio_features = batch
-
         # Forward pass
         optimizers = self.optimizers()
         schedulers = self.lr_schedulers()
         for opt in optimizers:
             opt.zero_grad()
         splat_optimizers = {k: optimizers[i] for i, k in enumerate(self.splat_optimizer_keys)}
+        inside_mouth_splat_optimizers = {
+            k: optimizers[i] for i, k in enumerate(self.inside_mouth_splat_optimizer_keys)
+        }
+        rigging_params = self.rigging_params.forward(batch.sequence_id, batch.time_step)
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
-            intrinsics=frame.intrinsics,
-            world_2_cam=frame.world_2_cam,
+            intrinsics=batch.intrinsics,
+            world_2_cam=batch.world_2_cam,
             cam_2_world=None,
-            image_height=int(frame.image.shape[1]),
-            image_width=int(frame.image.shape[2]),
-            color_correction=frame.color_correction,
+            image_height=int(batch.image.shape[1]),
+            image_width=int(batch.image.shape[2]),
+            color_correction=batch.color_correction,
             cur_sh_degree=self.get_cur_sh_degree(self.step),
-            se3_transform=frame.se3_transform,
-            camera_indices=frame.camera_indices,
-            audio_features=audio_features,
-            flame_params=flame_params,
+            se3_transform=batch.se3_transform,
+            camera_indices=batch.camera_indices,
+            rigging_params=rigging_params,
         )
 
         # Pre-backward densification
@@ -1213,28 +1256,63 @@ class RiggedGaussianSplatting(pl.LightningModule):
             step=self.step,
             info=infos,
         )
+        self.inside_mouth_strategy.step_pre_backward(
+            params=self.inside_mouth_splats,
+            optimizers=splat_optimizers,
+            state=self.strategy_state,
+            step=self.step,
+            info=infos,
+        )
 
         # Loss computation and logging
+        if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
+            denoised_images = rendered_images
+        else:
+            denoised_images = None
+
         loss_dict = self.compute_loss(
-            rendered_images=rendered_images,
-            rendered_alphas=rendered_alphas,
-            target_images=frame.image,
-            target_alphas=frame.alpha_map,
-            target_segmentation_mask=frame.segmentation_mask,
+            rendered_images=infos['default_render_images'],
+            rendered_alphas=infos['default_render_alphas'],
+            target_images=batch.image,
+            target_alphas=batch.alpha_map,
+            target_segmentation_mask=batch.segmentation_mask,
             infos=infos,
+            mode='default',
+            denoised_images=denoised_images,
         )
-        loss = loss_dict["loss"]
+        merged_loss_dict = self.compute_loss(
+            rendered_images=infos['pre_denoised_rendered_images'],
+            rendered_alphas=rendered_alphas,
+            target_images=batch.image,
+            target_alphas=batch.alpha_map,
+            target_segmentation_mask=batch.segmentation_mask,
+            infos=infos,
+            mode='merged',
+            denoised_images=denoised_images,
+        )
+        loss_dict = loss_dict | merged_loss_dict
+        loss = loss_dict["default/loss"] + loss_dict["merged/loss"]
+
         for key, value in loss_dict.items():
-            self.log(f'train/{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
-        if 'cache_hit_rate' in infos:
-            self.log('cache_hit_rate', infos['cache_hit_rate'], on_step=True, on_epoch=False)
-        if 'per_gaussian_movement' in infos:
+            self.log(f'train_{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
+        if 'default_per_gaussian_movement' in infos:
             self.log(
-                'per_gaussian_movement',
-                infos['per_gaussian_movement'],
+                'default_per_gaussian_movement',
+                infos['default_per_gaussian_movement'],
+                on_step=True,
+                on_epoch=False)
+        if 'merged_per_gaussian_movement' in infos:
+            self.log(
+                'merged_per_gaussian_movement',
+                infos['merged_per_gaussian_movement'],
                 on_step=True,
                 on_epoch=False)
         self.log('num_gaussians', self.splats['means'].shape[0], on_step=True, on_epoch=False)
+        self.log(
+            'num_inside_mouth_gaussians',
+            self.inside_mouth_splats['means'].shape[0],
+            on_step=True,
+            on_epoch=False)
 
         # Backward pass and optimization
         self.manual_backward(loss)
@@ -1250,7 +1328,14 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     optimizers=splat_optimizers,
                     state=self.strategy_state,
                     step=self.step,
-                    info=infos,
+                    info=infos['default_infos'],
+                )
+                self.inside_mouth_strategy.step_post_backward(
+                    params=self.inside_mouth_splats,
+                    optimizers=inside_mouth_splat_optimizers,
+                    state=self.strategy_state,
+                    step=self.step,
+                    info=infos['inside_mouth_infos'],
                 )
             case "monte_carlo_markov_chain":
                 self.strategy.step_post_backward(
@@ -1258,7 +1343,15 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     optimizers=splat_optimizers,
                     state=self.strategy_state,
                     step=self.step,
-                    info=infos,
+                    info=infos['default_infos'],
+                    lr=schedulers.get_last_lr()[0],
+                )
+                self.inside_mouth_strategy.step_post_backward(
+                    params=self.inside_mouth_splats,
+                    optimizers=inside_mouth_splat_optimizers,
+                    state=self.strategy_state,
+                    step=self.step,
+                    info=infos['inside_mouth_infos'],
                     lr=schedulers.get_last_lr()[0],
                 )
             case _:
@@ -1267,24 +1360,28 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
         # Log images
         if self.step % self.gaussian_splatting_settings.log_images_interval == 0:
-            # denoised images
-            canvas = (
-                torch.concatenate(
-                    [frame.image[0].clamp(0, 1), rendered_images[0].clamp(0, 1)],
-                    dim=1,
-                ).detach().cpu().numpy())
-            canvas = (canvas * 255).astype(np.uint8)
-            writer = self.logger.experiment
-            writer.add_image("train/denoised_render", canvas, self.step, dataformats="HWC")
-            # raw render
+            # gt, merged (and optionally denoised)
+            self.log_image(
+                left_image=batch.image[0],
+                right_image=rendered_images[0],
+                step=self.step,
+                name="train/gt_and_merged",
+            )
+            # default, inside mouth
+            self.log_image(
+                left_image=infos['default_render_images'][0],
+                right_image=infos['inside_mouth_render_images'][0],
+                step=self.step,
+                name="train/default_and_inside_mouth",
+            )
+            # rendered denoised (if screen space denoising is enabled)
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
-                canvas = (
-                    torch.concatenate(
-                        [frame.image[0].clamp(0, 1), infos['raw_rendered_images'][0].clamp(0, 1)],
-                        dim=1,
-                    ).detach().cpu().numpy())
-                canvas = (canvas * 255).astype(np.uint8)
-                writer.add_image("train/raw_render", canvas, self.step, dataformats="HWC")
+                self.log_image(
+                    left_image=infos['pre_denoised_rendered_images'][0],
+                    right_image=rendered_images[0],
+                    step=self.step,
+                    name="train/noisy_and_denoised",
+                )
 
         # Iteration time logging
         time_elapsed = time.time() - t
@@ -1310,68 +1407,107 @@ class RiggedGaussianSplatting(pl.LightningModule):
     @torch.no_grad()
     def validation_step(
         self,
-        batch: tuple[SingleFrameData, UnbatchedFlameParams, Float[torch.Tensor, 'window 1024']],
+        batch: SingleFrameData,
         batch_idx: int,
     ) -> torch.Tensor:
-        """Validation step."""
+        """
+        Validation step.
+
+        Args:
+            batch (SingleFrameData): The batch.
+            batch_idx (int): The batch index.
+
+        Returns:
+            torch.Tensor: The loss.
+        """
+
         # Pause the viewer if needed
         if self.enable_viewer:
             while self.viewer.state.status == "paused":
                 time.sleep(0.01)
             self.viewer.lock.acquire()
             tic = time.time()
+        t = time.time()
 
-        # Unpack the batch
-        frame, flame_params, audio_features = batch
+        # Forward pass
 
+        rigging_params = self.rigging_params.forward(batch.sequence_id, batch.time_step)
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
-            intrinsics=frame.intrinsics,
-            world_2_cam=frame.world_2_cam,
+            intrinsics=batch.intrinsics,
+            world_2_cam=batch.world_2_cam,
             cam_2_world=None,
-            image_height=int(frame.image.shape[1]),
-            image_width=int(frame.image.shape[2]),
-            color_correction=frame.color_correction,
-            cur_sh_degree=self.max_sh_degree,
-            se3_transform=frame.se3_transform,
-            camera_indices=frame.camera_indices,
-            audio_features=audio_features,
-            flame_params=flame_params,
+            image_height=int(batch.image.shape[1]),
+            image_width=int(batch.image.shape[2]),
+            color_correction=batch.color_correction,
+            cur_sh_degree=self.get_cur_sh_degree(self.step),
+            se3_transform=batch.se3_transform,
+            camera_indices=batch.camera_indices,
+            rigging_params=rigging_params,
         )
 
         # Loss computation and logging
-        loss_dict = self.compute_loss(
-            rendered_images=rendered_images,
-            rendered_alphas=rendered_alphas,
-            target_images=frame.image,
-            target_alphas=frame.alpha_map,
-            target_segmentation_mask=frame.segmentation_mask,
-            infos=infos,
-        )
-        loss = loss_dict["loss"]
-        for key, value in loss_dict.items():
-            self.log(f'val/{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
-        if 'cache_hit_rate' in infos:
-            self.log('val/cache_hit_rate', infos['cache_hit_rate'], on_step=True, on_epoch=False)
+        if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
+            denoised_images = rendered_images
+        else:
+            denoised_images = None
 
-        if batch_idx % 20 == 0:
-            # Log denoised images
-            canvas = (
-                torch.concatenate(
-                    [frame.image[0].clamp(0, 1), rendered_images[0].clamp(0, 1)],
-                    dim=1,
-                ).detach().cpu().numpy())
-            canvas = (canvas * 255).astype(np.uint8)
-            writer = self.logger.experiment
-            writer.add_image("val/denoised_render", canvas, self.step, dataformats="HWC")
-            # Log raw renders
+        loss_dict = self.compute_loss(
+            rendered_images=infos['default_render_images'],
+            rendered_alphas=infos['default_render_alphas'],
+            target_images=batch.image,
+            target_alphas=batch.alpha_map,
+            target_segmentation_mask=batch.segmentation_mask,
+            infos=infos,
+            mode='default',
+            denoised_images=denoised_images,
+        )
+        merged_loss_dict = self.compute_loss(
+            rendered_images=infos['pre_denoised_rendered_images'],
+            rendered_alphas=rendered_alphas,
+            target_images=batch.image,
+            target_alphas=batch.alpha_map,
+            target_segmentation_mask=batch.segmentation_mask,
+            infos=infos,
+            mode='merged',
+            denoised_images=denoised_images,
+        )
+        loss_dict = loss_dict | merged_loss_dict
+        loss = loss_dict["default/loss"] + loss_dict["merged/loss"]
+
+        for key, value in loss_dict.items():
+            self.log(f'val_{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
+
+        # Log images
+        if self.step % self.gaussian_splatting_settings.log_images_interval == 0:
+            # gt, merged (and optionally denoised)
+            self.log_image(
+                left_image=batch.image[0],
+                right_image=rendered_images[0],
+                step=self.step,
+                name="val/gt_and_merged",
+            )
+            # default, inside mouth
+            self.log_image(
+                left_image=infos['default_render_images'][0],
+                right_image=infos['inside_mouth_render_images'][0],
+                step=self.step,
+                name="val/default_and_inside_mouth",
+            )
+            # rendered denoised (if screen space denoising is enabled)
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
-                canvas = (
-                    torch.concatenate(
-                        [batch.image[0].clamp(0, 1), infos['raw_rendered_images'][0].clamp(0, 1)],
-                        dim=1,
-                    ).detach().cpu().numpy())
-                canvas = (canvas * 255).astype(np.uint8)
-                writer.add_image("val/raw_render", canvas, self.step, dataformats="HWC")
+                self.log_image(
+                    left_image=infos['pre_denoised_rendered_images'][0],
+                    right_image=rendered_images[0],
+                    step=self.step,
+                    name="val/noisy_and_denoised",
+                )
+
+        # Iteration time logging
+        time_elapsed = time.time() - t
+        its = 1 / time_elapsed
+        fps = rendered_images.shape[0] / time_elapsed
+        self.log('val/its', its, on_step=True, on_epoch=False, prog_bar=True)
+        self.log('val/fps', fps, on_step=True, on_epoch=False, prog_bar=True)
 
         # Resume the viewer if needed
         if self.enable_viewer:
@@ -1428,17 +1564,33 @@ class RiggedGaussianSplatting(pl.LightningModule):
 # ==================================================================================== #
 
 
-def train(config_path: str) -> None:
-    """ Train loop for the static single frame model. """
+def train_static(
+    config_path: str,
+    sequence: int = CANONICAL_SEQUENCE_FRAME[0],
+    time_step: int = CANONICAL_SEQUENCE_FRAME[1],
+    port: int | None = None,
+) -> int:
+    """
+    Train loop for the static mode.
+
+    Args:
+        config_path (str): Path to the configuration file.
+        sequence (int): The sequence.
+        time_step (int): The time step.
+        overwrite (bool): Whether to overwrite the existing model.
+
+    Returns:
+        int: The port number. Useful when fine-tuning the rigid parameters.
+    """
 
     # set up model
     config = load_config(config_path)
-    model = GaussianSplattingVideo(
+    model = RiggedGaussianSplatting(
         train_sequences=config.train_sequences,
-        val_sequences=config.val_sequences,
         gaussian_splatting_settings=config.gaussian_splatting_settings,
         learning_rates=config.learning_rates,
         enable_viewer=config.enable_viewer,
+        training_mode='static',
     )
     if config.compile:
         # model._compile()
@@ -1448,54 +1600,53 @@ def train(config_path: str) -> None:
 
     torch.set_float32_matmul_precision('high')
 
-    #
-
-    # sanity check
+    # sanity checks
     params = model.splats
-    optimizers, schedulers = model.configure_optimizers()
+    optimizers, _ = model.configure_optimizers()
     splat_optimizers = {k: optimizers[i] for i, k in enumerate(model.splat_optimizer_keys)}
+    inside_mouth_splat_optimizers = {
+        k: optimizers[i] for i, k in enumerate(model.inside_mouth_splat_optimizer_keys)
+    }
     model.strategy.check_sanity(params, splat_optimizers)
+    model.inside_mouth_strategy.check_sanity(model.inside_mouth_splats,
+                                             inside_mouth_splat_optimizers)
 
-    # get dataloaders
-    train_set = MultiSequenceDataset(
-        sequences=list(config.train_sequences)
-        if config.train_sequences is not None else TRAIN_SEQUENCES,
+    # get datasets
+    train_set = SingleSequenceDataset(
         cameras=TRAIN_CAMS,
+        sequence=sequence,
+        start_idx=time_step,
+        end_idx=time_step + 1,
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
-        window_size=config.gaussian_splatting_settings.prior_window_size,
+        length_multiplier=500,
     )
+    val_set = SingleSequenceDataset(
+        cameras=TEST_CAMS,
+        sequence=sequence,
+        start_idx=time_step,
+        end_idx=time_step + 1,
+        n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
+    )
+
+    # get loaders
     train_loader = DataLoader(
         train_set,
         batch_size=None,
         shuffle=True,
         num_workers=config.num_train_workers,
         persistent_workers=True)
-    val_set = MultiSequenceDataset(
-        sequences=list(config.val_sequences)
-        if config.val_sequences is not None else TEST_SEQUENCES,
-        cameras=TEST_CAMS,
-        n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
-        window_size=config.gaussian_splatting_settings.prior_window_size,
-    )
     val_loader = DataLoader(
         val_set,
         batch_size=None,
-        shuffle=True,
+        shuffle=False,
         num_workers=config.num_val_workers,
         persistent_workers=True,
     )
 
-    # add flame params to viewer
-    if config.enable_viewer:  # TODO: maybe it needs its own flag?
-        sm = SequenceManager(100)
-        flame_params = sm.flame_params[:]
-        flame_params = UnbatchedFlameParams(*(a.to('cuda') for a in flame_params))
-        model.render_flame_params = flame_params
-
     # start viewer
     model.cuda()
     if config.enable_viewer:
-        model.start_viewer(mode="training")
+        port = model.start_viewer(mode="training", sequence=sequence, frame=time_step, port=port)
 
     # train
     logger = TensorBoardLogger("tb_logs/video", name=config.name)
@@ -1503,11 +1654,12 @@ def train(config_path: str) -> None:
         logger=logger,
         max_epochs=None,
         max_steps=config.gaussian_splatting_settings.train_iterations * model.n_optimizers,
-        limit_val_batches=25,
         val_check_interval=500,
         check_val_every_n_epoch=None,
     )
     trainer.fit(model, train_loader, val_loader)
+
+    return port
 
 
 # ==================================================================================== #
@@ -1520,21 +1672,17 @@ if __name__ == "__main__":
         "-c",
         "--config",
         type=str,
-        default="configs/direct_pred.yml",
+        default="configs/rigged_gs.yml",
         help="Path to the configuration file.")
     parser.add_argument(
         "-v", "--visualize", type=str, help="Path to checkpoint file to visualize.")
     args = parser.parse_args()
     if args.visualize:
-        sm = SequenceManager(100)
-        flame_params = sm.flame_params[:]
-        flame_params = UnbatchedFlameParams(*(a.to('cuda') for a in flame_params))
-        model = GaussianSplattingVideo.load_from_checkpoint(
+        model = RiggedGaussianSplatting.load_from_checkpoint(
             args.visualize, ckpt_path=args.visualize)
-        model.render_flame_params = flame_params
         model.cuda()
         print("Starting viewer...")
-        model.start_viewer(mode='rendering')
+        model.start_viewer(mode='rendering', sequence=100)
         print("To exit, press Ctrl+C.")
         time.sleep(100000)
 
@@ -1543,5 +1691,6 @@ if __name__ == "__main__":
             if not (args.config.endswith(".yml") or args.config.endswith(".yaml")):
                 args.config = f'configs/{args.config}.yml'
         print("Using config file:", args.config)
-        train(args.config)
+        # for debugging only
+        train_static(args.config)
         print("Starting training...")

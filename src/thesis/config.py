@@ -87,6 +87,7 @@ class GaussianSplattingSettings:
     camera_batch_size: int = 1
     sh_increase_interval: int = 1_000
     train_iterations: int = 30_000
+    rigid_fine_tune_iterations: int = 1_000
     log_images_interval: int = 500
 
 
