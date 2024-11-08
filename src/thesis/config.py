@@ -35,6 +35,7 @@ class GaussianSplattingSettings:
     background_g: float = 0.5
     background_b: float = 0.5
     screen_space_denoising_mode: str = "none"
+    screen_space_denoising_start_iteration: int = 5_000
     camera_color_correction: bool = False
     learnable_color_correction: bool = False
 

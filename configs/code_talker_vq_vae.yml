@@ -1,11 +1,14 @@
 # Config for the VQ-VAE model
-name: without_neck_default
+name: without_neck_fsq
 
 model:
-  quantization_mode: default
+  quantization_mode: fsq
   disable_neck: true
+  n_vertices: 5443
 
 training:
   epochs: 200
+  # base_lr: 0.0001
+  base_lr: 0.001
 
 compile: false

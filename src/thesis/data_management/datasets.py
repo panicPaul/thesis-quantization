@@ -5,7 +5,7 @@ from jaxtyping import Float
 from torch.utils.data import Dataset
 
 import thesis.data_management.data_classes as dc
-from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS
+from thesis.constants import DATA_DIR_NERSEMBLE, TRAIN_CAMS, TRAIN_SEQUENCES
 from thesis.data_management.sequence_manager import (
     MultiSequenceManager,
     SequenceManager,
@@ -65,6 +65,47 @@ class SingleSequenceDataset(Dataset):
         idx = idx % (self.end_idx - self.start_idx)
         idx += self.start_idx
         return self.sequence_manager.get_single_frame(idx, self.n_cameras_per_frame)
+
+
+# ==================================================================================== #
+#                         Sequential Multi-sequence Dataset                            #
+# ==================================================================================== #
+class SequentialMultiSequenceDataset(Dataset):
+    """Dataset for multi sequence data."""
+
+    def __init__(
+        self,
+        sequences: list[int] = TRAIN_SEQUENCES,
+        cameras: list[int] = TRAIN_CAMS,
+        image_downsampling_factor: int | float = 1,
+        n_cameras_per_frame: int | None = None,
+        data_dir: str = DATA_DIR_NERSEMBLE,
+    ) -> None:
+        """
+        Args:
+            sequences (list[int | str]): Sequence number.
+            cameras (list[int]): List of camera IDs to use.
+            image_downsampling_factor (int | float): Downsampling factor for the images,
+                masks and intrinsics.
+            n_cameras_per_frame (int | None): Number of cameras per frame. If None,
+                all cameras are used. Otherwise they are randomly sampled.
+            data_dir (str): Directory containing the data.
+        """
+
+        self.msm = MultiSequenceManager(
+            sequences=sequences,
+            cameras=cameras,
+            image_downsampling_factor=image_downsampling_factor,
+            data_dir=data_dir,
+        )
+        self.n_cameras_per_frame = n_cameras_per_frame
+
+    def __len__(self) -> int:
+        return len(self.msm)
+
+    def __getitem__(self, idx: int) -> dc.SingleFrameData:
+        sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
+        return self.msm[sequence_idx].get_single_frame(frame_idx, self.n_cameras_per_frame)
 
 
 # ==================================================================================== #

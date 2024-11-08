@@ -1,11 +1,12 @@
 # audio to vertices prediction
 
-name: prediction_new_vq_vae
+name: prediction_new_vq_vae_fsq
 
 model:
   # vq_vae_pretrained_path: tb_logs/vector_quantization/without_neck_fsq/version_0/checkpoints/epoch=199-step=15400.ckpt
-  vq_vae_pretrained_path: tb_logs/vector_quantization/without_neck_default/version_16/checkpoints/epoch=199-step=15400.ckpt
-
+  # vq_vae_pretrained_path: tb_logs/vector_quantization/without_neck_default/version_16/checkpoints/epoch=199-step=15400.ckpt
+  # vq_vae_pretrained_path: tb_logs/vector_quantization/without_neck_default/version_17/checkpoints/epoch=199-step=15400.ckpt
+  vq_vae_pretrained_path: tb_logs/vector_quantization/without_neck_fsq/version_2/checkpoints/epoch=199-step=15400.ckpt
 training: {}
 
 compile: False

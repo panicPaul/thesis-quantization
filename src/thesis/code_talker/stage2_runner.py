@@ -22,7 +22,7 @@ from thesis.data_management import (
     QuantizationDataset,
     UnbatchedFlameParams,
 )
-from thesis.flame import FlameHead
+from thesis.flame import FlameHead, FlameHeadWithInnerMouth
 
 
 # TODO: adapt time downsampling as well!
@@ -41,7 +41,11 @@ class Stage2Runner(pl.LightningModule):
             motion_weight=training_config.motion_weight,
         )
         self.disable_neck = self.model.disable_neck
-        self.flame_head = FlameHead()
+        n_vertices = self.model.autoencoder.n_vertices
+        if n_vertices == 5443:
+            self.flame_head = FlameHeadWithInnerMouth()
+        else:
+            self.flame_head = FlameHead()
         self.config = config
         self.training_config = training_config
         canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)

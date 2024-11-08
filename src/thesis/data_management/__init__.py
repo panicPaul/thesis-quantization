@@ -10,6 +10,7 @@ from thesis.data_management.data_classes import (
 from thesis.data_management.datasets import (
     MultiSequenceDataset,
     QuantizationDataset,
+    SequentialMultiSequenceDataset,
     SingleSequenceDataset,
 )
 from thesis.data_management.point_cloud import load_point_cloud

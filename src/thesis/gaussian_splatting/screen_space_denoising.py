@@ -12,16 +12,23 @@ class ScreenSpaceDenoising(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
+        hidden_channels = 32
+        self.conv1 = nn.Conv2d(4, hidden_channels, 3, padding=1)
 
-        self.conv1 = nn.Conv2d(4, 64, 3, padding=1)
-        self.conv2 = nn.Conv2d(64, 64, 3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, 3, padding=1)
-        self.conv4 = nn.Conv2d(64, 64, 3, padding=1)
-        self.conv5 = nn.Conv2d(64, 64, 3, padding=1)
-        self.conv6 = nn.Conv2d(64, 3, 3, padding=1)
+        self.conv2 = nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1)
+        self.conv3 = nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1)
 
-        self.input_residual = nn.Conv2d(4, 64, 1)
-        self.output_residual = nn.Conv2d(64, 3, 1)
+        self.conv4 = nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1)
+        self.conv5 = nn.Conv2d(hidden_channels, hidden_channels, 3, padding=1)
+
+        self.conv6 = nn.Conv2d(hidden_channels, 3, 3, padding=1)
+
+    def inverse_sigmoid(
+        self,
+        x: Float[torch.Tensor, "cam height width 3"],
+    ) -> Float[torch.Tensor, "cam height width 3"]:
+        x = torch.clamp(x, 1e-6, 1 - 1e-6)  # small clipping to avoid log(0)
+        return torch.log(x / (1-x))
 
     def forward(
         self,
@@ -38,15 +45,19 @@ class ScreenSpaceDenoising(nn.Module):
         """
         x = torch.cat([image, alphas], dim=-1)
         x = torch.permute(x, (0, 3, 1, 2))  # (cam, 4, height, width)
+        image = self.inverse_sigmoid(image)
+        image = torch.permute(image, (0, 3, 1, 2))
 
-        residual = self.input_residual(x)
-        x = nn.functional.silu(self.conv1(x) + residual)
-        x = nn.functional.silu(self.conv2(x) + x)
-        x = nn.functional.silu(self.conv3(x) + x)
-        x = nn.functional.silu(self.conv4(x) + x)
-        x = nn.functional.silu(self.conv5(x) + x)
-        x = nn.functional.silu(self.conv6(x) + x)
-        residual = self.output_residual(x)
-        x = x + residual
+        x = nn.functional.silu(self.conv1(x))
+
+        residual = x
+        x = nn.functional.silu(self.conv2(x))
+        x = nn.functional.silu(self.conv3(x)) + residual
+
+        residual = x
+        x = nn.functional.silu(self.conv4(x))
+        x = nn.functional.silu(self.conv5(x)) + residual
+
+        x = nn.functional.sigmoid(self.conv6(x) + image)
         x = torch.permute(x, (0, 2, 3, 1))
         return x

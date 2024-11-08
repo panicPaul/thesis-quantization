@@ -22,7 +22,7 @@ from thesis.data_management import (
     QuantizationDataset,
     UnbatchedFlameParams,
 )
-from thesis.flame import FlameHead
+from thesis.flame import FlameHead, FlameHeadWithInnerMouth
 from thesis.video_utils import render_mesh_image
 
 
@@ -39,8 +39,11 @@ class Stage1Runner(pl.LightningModule):
 
         super().__init__()
         self.save_hyperparameters()
+        if config.n_vertices == 5443:
+            self.flame_head = FlameHeadWithInnerMouth()
+        else:
+            self.flame_head = FlameHead()
         self.model = VQAutoEncoder(*config)
-        self.flame_head = FlameHead()
         self.config = config
         self.training_config = training_config
         canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
@@ -68,6 +71,7 @@ class Stage1Runner(pl.LightningModule):
             optimizer, step_size=self.training_config.step_size, gamma=self.training_config.gamma)
         return [optimizer], [scheduler]
 
+    # TODO: experiment with predicting flame vertices directly
     def calc_vq_loss(self, pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
         """ function that computes the various components of the VQ loss """
         rec_loss = nn.functional.l1_loss(pred, target)

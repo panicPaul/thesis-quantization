@@ -1,5 +1,5 @@
 # ===== Configuration for single-frame training =====
-name: test_run_static
+name: static_initialization
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
@@ -18,22 +18,24 @@ gaussian_splatting_settings:
   sh_degree: 3
 
   # post-processing settings
-  # background_r: 0.66
-  # background_g: 0.66
-  # background_b: 0.66
-  background_r: 0.0
-  background_g: 0.0
-  background_b: 0.0
-  screen_space_denoising_mode: none
+  background_r: 0.66
+  background_g: 0.66
+  background_b: 0.66
+  # background_r: 0.0
+  # background_g: 0.0
+  # background_b: 0.0
+  screen_space_denoising_mode: cnn
   learnable_color_correction: false
 
   # densification_settings
-  # densification_mode: monte_carlo_markov_chain
-  densification_mode: default
+  densification_mode: monte_carlo_markov_chain
+  # densification_mode: default
   refine_start_iteration: 500
-  refine_stop_iteration: 15_000
-  train_iterations: 30_000
-  cap_max: 250_000
+  refine_stop_iteration: 12_500
+  train_iterations: 15_000
+  cap_max: 50_000
+  screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
+
 
   # initialization settings
   # initialization_mode: point_cloud
@@ -72,7 +74,7 @@ gaussian_splatting_settings:
   # train settings
   feature_dim: 32
   camera_batch_size: 1
-  log_images_interval: 500
+  log_images_interval: 250
 
 # ---> Learning Rates
 learning_rates:
@@ -98,7 +100,7 @@ learning_rates:
 
   # --> post_processing
   learnable_color_correction_lr: 1e-5
-  screen_space_denoiser_lr: 3e-4
+  screen_space_denoiser_lr: 1e-3
 
 # ---> Random other stuff
 compile: true
