@@ -1,56 +1,8 @@
-# Remaining Tasks
-## Audio2Flame
-- [ ] try codetalker
+# Speech-driven Face Synthesis with 3D Gaussian Splatting
+Repo for my master thesis.
 
-## Rendering
-- [ ] train on only 8 or so frames and then fine tune the flame vertices on each frame to get a better motion prior
-    - copy video class
-- [ ] implement per gaussian classification
-
-# Thesis Project
-
-Flame-driven DF
-flame[t] -> encoder -> quantizer -> decoder -> flame[t] (-> flame df)
-
-Audio-driven DF
-Audio[t] -> encoder -> quantizer -> decoder -> flame[t] (-> flame df)
-
-
-per_gaussian_feature -> flame_vertices
-
-color correction is fucking things up for some reason. (maybe inverted?)
-
-
-- [ ] experiment with predicting flame offsets based on audio maybe? Similar to tri plane encoding!!!!
-
-
-
-- [ ] local rigidity loss!!!
-
-
-s03, t94 has eyes half closed
-# To Do's:
-- [ ] debug the KNN and flame deformation
-
-
-
-
-- [ ] use per gaussian classification (do I actually need that tho?)
-- [ ] nerfview toggle to enable/ disable the classes
-
-- [ ] k-nn search in flame vertices
-- [ ] per flame latents
-- [ ] attention-aggregation
-- [ ] windowed-input (only one time step for the images should be loaded)
-- [ ] change post and pre-processing to be their own functions
-- [ ] quantize windows (i.e. 512)
-- [ ] audio feature with severe bottleneck / small discrete quantization to infer emotions etc.
-
-- [ ] we can use boring windowed predictions to feed it into our model to see how far this gets us
-
-management
-
-
+## Abstract
+TODO
 
 ## Installation
 
@@ -58,6 +10,31 @@ To install the repository, run the following commands:
 
 ```bash
 conda env create --file environment.yml
-conda activate thesis_quantization
+conda activate master_thesis
 pre-commit install
 ```
+
+**Note:** When executing the code for the first time, gsplat will be compiled. This process will take approximately 3-5 minutes but only needs to be done once.
+
+### FLAME Model
+Download "FLAME 2023 (revised eye region, improved expressions, versions w/ and w/o jaw rotation)" from the [official website](https://flame.is.tue.mpg.de/download.php).
+Place the downloaded file in the `assets/flame` directory.
+You can delete the `flame2023_no_jaw.pkl` file that comes with the download.
+
+**Note**: Manual registration is required on the FLAME website to download the model. Due to this, I cannot provide an automated installation script for this step.
+
+## Usage
+To train the model, use the following command:
+
+```bash
+./train.sh [optional arguments]
+```
+
+## Documentation
+The documentation is generated using Sphinx. To generate the documentation, run the following command:
+
+```bash
+cd docs && make html && cd ..
+```
+
+The entry point for the documentation is `docs/build/html/index.html`.

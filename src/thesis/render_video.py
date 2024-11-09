@@ -670,9 +670,10 @@ if __name__ == '__main__':
     audio_path = 'tmp/audio_recording_cleaned_s100.ogg'
     # audio_path = 'tmp/test.m4a'
     # gs_checkpoint = 'tb_logs/video/direct_pred/version_2/checkpoints/epoch=38-step=99000.ckpt'
-    gs_checkpoint = 'tb_logs/rigged_gs/dynamic/seq_3/version_0/checkpoints/epoch=4-step=481500.ckpt'
-    # a2f_checkpoint = 'tb_logs/audio_prediction/prediction_new_vq_vae/version_4/checkpoints/epoch=99-step=7700.ckpt'
-    a2f_checkpoint = 'tb_logs/audio_prediction/prediction_new_vq_vae/version_6/checkpoints/epoch=99-step=7700.ckpt'
+    gs_checkpoint = 'tb_logs/rigged_gs/dynamic/seq_3/version_0/checkpoints/epoch=4-step=481500.ckpt'  # noqa
+    # a2f_checkpoint = 'tb_logs/audio_prediction/prediction_new_vq_vae/version_4/checkpoints/epoch=99-step=7700.ckpt' # noqa
+    # a2f_checkpoint = 'tb_logs/audio_prediction/prediction_new_vq_vae/version_6/checkpoints/epoch=99-step=7700.ckpt' # noqa
+    a2f_checkpoint = 'tb_logs/audio_prediction/prediction_new_vq_vae_fsq/version_1/checkpoints/epoch=99-step=7700.ckpt'  # noqa
     output_path = 'tmp/video.mp4'
     load_sequence = 100
     load_gt = False
