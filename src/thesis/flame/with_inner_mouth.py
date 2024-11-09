@@ -4,7 +4,6 @@ expressive.
 """
 
 import torch
-import torch.nn as nn
 from jaxtyping import Float
 
 from thesis.data_management import FlameParams, UnbatchedFlameParams

@@ -1,11 +1,8 @@
 """ Utilities."""
 
-import matplotlib
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 from beartype import BeartypeConf, BeartypeStrategy, beartype
-from jaxtyping import Float, Int, UInt8
+from jaxtyping import Float, Int
 
 from thesis.constants import SEGMENTATION_CLASSES
 

@@ -354,17 +354,17 @@ class FlameHead(nn.Module):
 
         # upper, front
         v_teeth_upper_edge = (v_teeth_middle.clone() + torch.tensor([[0, mean_dist, 0]]) * 0.1)
-        v_teeth_upper_root = (v_teeth_upper_edge + torch.tensor([[0, mean_dist, 0]]) * 2
-                             )  # scale the height of teeth
+        v_teeth_upper_root = (v_teeth_upper_edge + torch.tensor([[0, mean_dist, 0]]) * 2)
+        # scale the height of teeth
 
         # lower, front
         v_teeth_lower_edge = (v_teeth_middle.clone() - torch.tensor([[0, mean_dist, 0]]) * 0.1)
         # v_teeth_lower_edge -= torch.tensor([[0, 0, mean_dist]]) * 0.2
         # slightly move the lower teeth to the back
-        v_teeth_lower_edge -= (torch.tensor([[0, 0, mean_dist]]) * 0.4
-                              )  # slightly move the lower teeth to the back
-        v_teeth_lower_root = (v_teeth_lower_edge - torch.tensor([[0, mean_dist, 0]]) * 2
-                             )  # scale the height of teeth
+        v_teeth_lower_edge -= (torch.tensor([[0, 0, mean_dist]]) * 0.4)
+        # slightly move the lower teeth to the back
+        v_teeth_lower_root = (v_teeth_lower_edge - torch.tensor([[0, mean_dist, 0]]) * 2)
+        # scale the height of teeth
 
         # thickness = mean_dist * 0.5
         thickness = mean_dist * 1.0

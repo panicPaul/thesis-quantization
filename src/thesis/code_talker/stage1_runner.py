@@ -61,8 +61,8 @@ class Stage1Runner(pl.LightningModule):
 
     def configure_optimizers(self):
         """ Configures the optimizers and schedulers. """
-        #NOTE: even tho we do have weight decay as a config option they do not use it in their
-        #      code base for whatever reason.
+        # NOTE: even tho we do have weight decay as a config option they do not use it in their
+        #       code base for whatever reason.
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.training_config.base_lr,
@@ -75,7 +75,7 @@ class Stage1Runner(pl.LightningModule):
     def calc_vq_loss(self, pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
         """ function that computes the various components of the VQ loss """
         rec_loss = nn.functional.l1_loss(pred, target)
-        ## loss is VQ reconstruction + weighted pre-computed quantization loss
+        # loss is VQ reconstruction + weighted pre-computed quantization loss
         quant_loss = quant_loss.mean()
         return quant_loss*quant_loss_weight + rec_loss, [rec_loss, quant_loss]
 

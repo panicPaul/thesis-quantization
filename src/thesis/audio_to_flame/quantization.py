@@ -46,8 +46,8 @@ class AudioFlameToFlame(pl.LightningModule):
         self.initial_projection = nn.Conv1d(1024, initial_projection, 1)
 
         self.window_size = window_size
-        audio_input_layer = nn.Linear(initial_projection * window_size, hidden_dim)
-        flame_input_layer = nn.Linear(103 * window_size, hidden_dim)
+        # audio_input_layer = nn.Linear(initial_projection * window_size, hidden_dim)
+        # flame_input_layer = nn.Linear(103 * window_size, hidden_dim)
 
         self.flame_head = FlameHead()
 

@@ -40,10 +40,12 @@ class MotionPrediction(nn.Module):
         Args:
             means (Float[torch.Tensor, 'n_gaussians 3']): The means of the gaussians.
             orientations (Float[torch.Tensor, 'n_gaussians 4']): The orientations of the gaussians.
-            per_gaussian_latents (Float[torch.Tensor, 'n_gaussians latent_dim']): The per-gaussian latents.
+            per_gaussian_latents (Float[torch.Tensor, 'n_gaussians latent_dim']): The per-gaussian
+                latents.
 
         Returns:
-            tuple[Float[torch.Tensor, 'n_gaussians 3'], Float[torch.Tensor, 'n_gaussians 4']]: The predicted means and orientations.
+            tuple[Float[torch.Tensor, 'n_gaussians 3'], Float[torch.Tensor, 'n_gaussians 4']]: The
+            predicted means and orientations.
         """
 
         input = torch.cat([means, orientations, per_gaussian_latents], dim=1)

@@ -1,5 +1,5 @@
 def get_model(cfg):
-    ## old
+    # old
     if cfg.arch == 'stage1_vocaset':
         from models.stage1_vocaset import VQAutoEncoder as Model
         model = Model(args=cfg)

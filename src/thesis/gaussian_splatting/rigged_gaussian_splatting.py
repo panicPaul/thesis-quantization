@@ -17,7 +17,7 @@ from einops import rearrange, repeat
 from gsplat import DefaultStrategy, MCMCStrategy, rasterization, rasterization_2dgs
 from jaxtyping import Float, Int, UInt8
 from lightning.pytorch.loggers import TensorBoardLogger
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig
 from torch import nn
 from torch.optim import Adam, AdamW  # , SparseAdam
 from torch.utils.data import DataLoader
@@ -32,7 +32,6 @@ from thesis.constants import (
     DEFAULT_SE3_ROTATION,
     DEFAULT_SE3_TRANSLATION,
     TEST_CAMS,
-    TEST_SEQUENCES,
     TRAIN_CAMS,
     TRAIN_SEQUENCES,
 )
@@ -57,7 +56,6 @@ from thesis.flame import FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
-    inside_mouth_flame_initialization,
     point_cloud_initialization,
     pre_trained_initialization,
     random_initialization,
@@ -495,8 +493,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
             vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
             gaussian_rotations = self.flame_knn.gather(
                 indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
-            # NOTE: I do not want to have to deal with spherical interpolation and this should be close
-            #       enough
+            # NOTE: I do not want to have to deal with spherical interpolation and this should be
+            #       close enough
             # gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
             # gaussian_rotations = gaussian_rotations.permute(1, 0,
             #                                                 2)  # (window_size, n_gaussians, 4)
@@ -789,7 +787,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
         # get the rigging params
         sequence = self.viewer_sequence
-        #frame = time_step if self.viewer_frame is None else self.viewer_frame
+        # frame = time_step if self.viewer_frame is None else self.viewer_frame
         frame = time_step
         rigging_params = self.rigging_params.forward(sequence, frame)
 
@@ -854,7 +852,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
             rendered_alphas (torch.Tensor): Rendered alphas, shape: `(cam, H, W, 1)`.
             target_images (torch.Tensor): Target images, shape: `(cam, H, W, 3)`.
             target_alphas (torch.Tensor): Target alphas, shape: `(cam, H, W)`.
-            target_segmentation_mask (torch.Tensor): Target segmentation mask, shape: `(cam, H, W, 3)`.
+            target_segmentation_mask (torch.Tensor): Target segmentation mask, shape:
+                `(cam, H, W, 3)`.
             infos (dict): Dictionary containing additional information.
             mode (str): Mode, either 'default' or 'merged'.
             denoised_images (torch.Tensor): Denoised images, shape: `(cam, H, W, 3)`.

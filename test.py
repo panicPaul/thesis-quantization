@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 
 from thesis.code_talker.stage2_runner import Stage2Runner

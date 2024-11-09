@@ -104,7 +104,7 @@ class CodeTalker(nn.Module):
         batch_size, time = audio_features.shape[:2]
 
         # gt motion feature extraction
-        #feat_q_gt, _ = self.autoencoder.get_quant(vertices - template)
+        # feat_q_gt, _ = self.autoencoder.get_quant(vertices - template)
         feat_q_gt, _, _ = self.autoencoder.encode(vertices - template)
         feat_q_gt = feat_q_gt.permute(0, 2, 1)
 

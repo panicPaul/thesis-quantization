@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from jaxtyping import Float
-from vector_quantize_pytorch import FSQ, LFQ
+from vector_quantize_pytorch import FSQ
 
 from thesis.code_talker.models.lib.base_models import (
     LinearEmbedding,
@@ -28,8 +28,8 @@ class BottleNeck(nn.Module):
             Float[torch.Tensor, ""],
             tuple,
     ]:
-        embedding_loss = torch.tensor(0.0, requires_grad=True)  # dummy value
-        info = ()  # empty tuple
+        # embedding_loss = torch.tensor(0.0, requires_grad=True)  # dummy value
+        # info = ()  # empty tuple
         x = self.linear(x)
         x = x.permute(0, 2, 1)
         return x
@@ -190,10 +190,10 @@ class VQAutoEncoder(nn.Module):
         """
         batch_size, time, n_vertices, _ = x.shape
         x = x.view(batch_size, time, -1)
-        h = self.encoder(x)  ## x --> z'
+        h = self.encoder(x)  # x --> z'
         h = h.view(batch_size, time, self.face_quan_num, self.code_dim)  # (b, t, h, c)
         h = h.view(batch_size, time * self.face_quan_num, self.code_dim)  # (b, t*h, c)
-        quant, emb_loss, info = self.quantize(h)  ## finds nearest quantization
+        quant, emb_loss, info = self.quantize(h)  # finds nearest quantization
         return quant, emb_loss, info
 
     def decode(
@@ -208,13 +208,13 @@ class VQAutoEncoder(nn.Module):
         Returns:
             torch.Tensor: reconstructed tensor of shape (batch, time, n_vertices, 3)
         """
-        #BCL
+        # BCL
         batch_size, code_dim, ht = quant.shape
         quant = quant.permute(0, 2, 1)
         quant = quant.view(batch_size, -1, self.face_quan_num, self.code_dim).contiguous()
         quant = quant.view(batch_size, -1, self.face_quan_num * self.code_dim).contiguous()
         quant = quant.permute(0, 2, 1).contiguous()
-        dec = self.decoder(quant)  ## z' --> x
+        dec = self.decoder(quant)  # z' --> x
         dec = dec.view(batch_size, -1, self.n_vertices, 3)
         return dec * 1e-3
 
@@ -264,7 +264,7 @@ class VQAutoEncoder(nn.Module):
         return quant_z, indices
 
     def get_distances(self, x):
-        h = self.encoder(x)  ## x --> z'
+        h = self.encoder(x)  # x --> z'
         d = self.quantize.get_distance(h)
         return d
 
@@ -311,17 +311,17 @@ class VQAutoEncoder(nn.Module):
         """
         logits = logits / temperature
         sample_idx = 0
-        ##########
+
         probs = F.softmax(logits, dim=-1)  # B, N, embed_num
         if sample:
-            ## multinomial sampling
+            # multinomial sampling
             shape = probs.shape
             probs = probs.reshape(shape[0] * shape[1], shape[2])
             ix = torch.multinomial(probs, num_samples=sample_idx + 1)
             probs = probs.reshape(shape[0], shape[1], shape[2])
             ix = ix.reshape(shape[0], shape[1])
         else:
-            ## top 1; no sampling
+            # top 1; no sampling
             _, ix = torch.topk(probs, k=1, dim=-1)
         return ix, probs
 
@@ -372,17 +372,15 @@ class TransformerEncoder(nn.Module):
         self.encoder_transformer = Transformer(
             in_size=hidden_size,
             hidden_size=hidden_size,
-            num_hidden_layers=\
-                    num_hidden_layers,
-            num_attention_heads=\
-                    num_attention_heads,
-            intermediate_size=\
-                    intermediate_size)
+            num_hidden_layers=num_hidden_layers,
+            num_attention_heads=num_attention_heads,
+            intermediate_size=intermediate_size,
+        )
         self.encoder_pos_embedding = PositionalEncoding(hidden_size)
         self.encoder_linear_embedding = LinearEmbedding(hidden_size, hidden_size)
 
     def forward(self, inputs):
-        ## downsample into path-wise length seq before passing into transformer
+        # downsample into path-wise length seq before passing into transformer
         dummy_mask = {'max_mask': None, 'mask_index': -1, 'mask': None}
         inputs = self.vertices_mapping(inputs)
         inputs = self.squasher(inputs.permute(0, 2, 1)).permute(0, 2, 1)  # [N L C]
@@ -444,12 +442,10 @@ class TransformerDecoder(nn.Module):
         self.decoder_transformer = Transformer(
             in_size=hidden_size,
             hidden_size=hidden_size,
-            num_hidden_layers=\
-                num_hidden_layers,
-            num_attention_heads=\
-                num_attention_heads,
-            intermediate_size=\
-                intermediate_size)
+            num_hidden_layers=num_hidden_layers,
+            num_attention_heads=num_attention_heads,
+            intermediate_size=intermediate_size,
+        )
         self.decoder_pos_embedding = PositionalEncoding(hidden_size)
         self.decoder_linear_embedding = LinearEmbedding(hidden_size, hidden_size)
 
@@ -457,12 +453,12 @@ class TransformerDecoder(nn.Module):
 
     def forward(self, inputs):
         dummy_mask = {'max_mask': None, 'mask_index': -1, 'mask': None}
-        ## upsample into original length seq before passing into transformer
+        # upsample into original length seq before passing into transformer
         for i, module in enumerate(self.expander):
             inputs = module(inputs)
             if i > 0:
                 inputs = inputs.repeat_interleave(2, dim=2)
-        inputs = inputs.permute(0, 2, 1)  #BLC
+        inputs = inputs.permute(0, 2, 1)  # BLC
         decoder_features = self.decoder_linear_embedding(inputs)
         decoder_features = self.decoder_pos_embedding(decoder_features)
 

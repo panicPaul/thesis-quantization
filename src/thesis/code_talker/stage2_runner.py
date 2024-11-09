@@ -4,11 +4,8 @@ import argparse
 
 import lightning as pl
 import torch
-import torch.nn as nn
-from jaxtyping import Float
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import OmegaConf
-from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 
 from thesis.code_talker.models.code_talker_config import (
@@ -55,13 +52,13 @@ class Stage2Runner(pl.LightningModule):
 
     def configure_optimizers(self):
         """ Configures the optimizers and schedulers. """
-        #NOTE: even tho we do have weight decay as a config option they do not use it in their
-        #      code base for whatever reason.
+        # NOTE: even tho we do have weight decay as a config option they do not use it in their
+        #       code base for whatever reason.
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.training_config.base_lr,
         )
-        #scheduler = StepLR(
+        # scheduler = StepLR(
         #    optimizer, step_size=self.training_config.step_size, gamma=self.training_config.gamma)
         return optimizer
 

@@ -3,8 +3,6 @@
 import os
 
 import cv2
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 from jaxtyping import Float, Int
 from tqdm import tqdm
@@ -210,7 +208,7 @@ if __name__ == '__main__':
     match mode:
         case 'vertex_reconstruction':
             # vertex reconstruction
-            checkpoint_path = 'tb_logs/vector_quantization/without_neck_default/version_16/checkpoints/epoch=199-step=15400.ckpt'
+            checkpoint_path = 'tb_logs/vector_quantization/without_neck_default/version_16/checkpoints/epoch=199-step=15400.ckpt'  # noqa
             output_path = f'tmp/vq_reconstruction_sequence_{sequence}.mp4'
             render_vertex_reconstruction(
                 checkpoint_path,
@@ -219,7 +217,7 @@ if __name__ == '__main__':
                 quick_time_compatible=quick_time_compatible)
 
         case 'audio_pred_sequence':
-            checkpoint_path = 'tb_logs/audio_prediction/prediction_new_vq_vae/version_4/checkpoints/epoch=99-step=7700.ckpt'
+            checkpoint_path = 'tb_logs/audio_prediction/prediction_new_vq_vae/version_4/checkpoints/epoch=99-step=7700.ckpt'  # noqa
             output_path = f'tmp/audio_pred_sequence_{sequence}.mp4'
             render_audio_prediction(
                 checkpoint_path,

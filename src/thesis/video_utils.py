@@ -3,14 +3,13 @@
 import os
 import tempfile
 
-import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pydub
 import soundfile as sf
 import torch
 from jaxtyping import Float, Int, UInt8
-from moviepy.editor import AudioFileClip, VideoFileClip
+from moviepy.editor import AudioFileClip, VideoFileClip, clips_array
 
 from thesis.audio_feature_processing.audio_cleaning import pydub_to_np
 
@@ -115,9 +114,6 @@ def add_audio(
 
     # Replace the original file with the new one
     os.replace(temp_output_path, video_path)
-
-
-from moviepy.editor import VideoFileClip, clips_array
 
 
 def side_by_side(
