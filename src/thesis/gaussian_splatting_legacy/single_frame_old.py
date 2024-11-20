@@ -34,14 +34,18 @@ from thesis.constants import (
 from thesis.data_management import SequenceManager, SingleSequenceDataset
 from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
 from thesis.deformation_field.direct_prediction import DirectPrediction
-from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
-from thesis.gaussian_splatting.initialize_splats import (
+from thesis.gaussian_splatting_legacy.camera_color_correction import (
+    LearnableColorCorrection,
+)
+from thesis.gaussian_splatting_legacy.initialize_splats import (
     flame_initialization,
     point_cloud_initialization,
     pre_trained_initialization,
     random_initialization,
 )
-from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
+from thesis.gaussian_splatting_legacy.view_dependent_coloring import (
+    ViewDependentColorMLP,
+)
 from thesis.utils import (
     apply_se3_to_orientation,
     apply_se3_to_point,

@@ -31,8 +31,10 @@ from thesis.data_management import (
     UnbatchedSE3Transform,
 )
 from thesis.flame import FlameHeadWithInnerMouth
-from thesis.gaussian_splatting.rigged_gaussian_splatting import RiggedGaussianSplatting
-from thesis.gaussian_splatting.video import GaussianSplattingVideo
+from thesis.gaussian_splatting_legacy.rigged_gaussian_splatting import (
+    RiggedGaussianSplatting,
+)
+from thesis.gaussian_splatting_legacy.video import GaussianSplattingVideo
 from thesis.video_utils import add_audio
 
 

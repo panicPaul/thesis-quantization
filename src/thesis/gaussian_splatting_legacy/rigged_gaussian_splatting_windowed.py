@@ -39,10 +39,11 @@ from thesis.constants import (
 from thesis.data_management import (
     SequenceManager,
     SequentialMultiSequenceDataset,
+    SingleFrameData,
     SingleSequenceDataset,
     UnbatchedFlameParams,
 )
-from thesis.data_management.data_classes import SingleFrameData, UnbatchedSE3Transform
+from thesis.data_management.data_classes import UnbatchedSE3Transform
 from thesis.deformation_field.barycentric_weighting import (
     apply_barycentric_weights,
     compute_barycentric_weights,
@@ -50,15 +51,19 @@ from thesis.deformation_field.barycentric_weighting import (
 from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
 from thesis.flame import FlameHeadWithInnerMouth
-from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
-from thesis.gaussian_splatting.initialize_splats import (
+from thesis.gaussian_splatting_legacy.camera_color_correction import (
+    LearnableColorCorrection,
+)
+from thesis.gaussian_splatting_legacy.initialize_splats import (
     flame_initialization,
     point_cloud_initialization,
     pre_trained_initialization,
     random_initialization,
 )
-from thesis.gaussian_splatting.screen_space_denoising import ScreenSpaceDenoising
-from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
+from thesis.gaussian_splatting_legacy.screen_space_denoising import ScreenSpaceDenoising
+from thesis.gaussian_splatting_legacy.view_dependent_coloring import (
+    ViewDependentColorMLP,
+)
 from thesis.utils import (
     apply_se3_to_orientation,
     apply_se3_to_point,
@@ -66,21 +71,32 @@ from thesis.utils import (
     quaternion_multiplication,
 )
 
+# what it needs to be able to do:
+# audio only
+# flame only
+# audio + flame
+# nothing at all
+# different window sizes
+# maybe bottle neck / quantization of the audio features
 
-# TODO: experiment with SIREN here?
-class AudioFineTuning(nn.Module):
-    """ Audio fine tuning module. """
+
+class AudioToVertexFineTuning(nn.Module):
+    """
+    Fine-tunes the vertex positions with the audio features.
+    """
 
     def __init__(
         self,
         audio_feature_dim: int = 1024,
-        audio_embedding_dim: int = 32,
-        audio_codebook_size: int = 64,
+        audio_codebook_size: int = 64,  # if used
         audio_beta_commitment_loss: float = 0.25,
         flame_param_size: int = 113,
-        n_vertices: int = 5443,
+        window_size: int = 17,
+        per_gaussian_latent_dim: int = 32,
     ) -> None:
-        """ """
+        """
+        Adds pre vertex fine tuning to the gaussian splatting model.
+        """
         super().__init__()
 
         # audio
@@ -94,9 +110,9 @@ class AudioFineTuning(nn.Module):
         )  # (batch, 1024, window_size) -> (batch, 128, 1)
         self.audio_quantizer = VectorQuantizer(
             n_e=audio_codebook_size,
-            e_dim=audio_embedding_dim,
+            e_dim=32,
             beta=audio_beta_commitment_loss,
-        )
+        )  # (batch, 128, 1) -> (batch, 32, 1)
 
         # flame params
         self.flame_squasher = nn.Sequential(
@@ -106,23 +122,26 @@ class AudioFineTuning(nn.Module):
             nn.SiLU(),
             nn.Conv1d(32, 32, 3, padding=1),
             nn.AdaptiveAvgPool1d(1),
-        )
+        )  # (batch, flame_param_size, window_size) -> (batch, 32, 1)
 
         # fusion
         self.fusion = nn.Sequential(
-            nn.Linear(64, 128),
+            nn.Linear(32 + 32 + 3 + 4 + per_gaussian_latent_dim, 128),
             nn.SiLU(),
             nn.Linear(128, 256),
             nn.SiLU(),
             nn.Linear(256, 512),
             nn.SiLU(),
-            nn.Linear(512, n_vertices * 3),
+            nn.Linear(512, 3 + 4),
         )
 
     def forward(
         self,
         audio_features: Float[torch.Tensor, "window_size audio_feature_dim"],
-        flame_params: UnbatchedFlameParams,
+        flame_params: UnbatchedFlameParams,  # also windowed
+        per_vertex_latents: Float[torch.Tensor, "n_vertices latent_dim"],
+        canonical_positions: Float[torch.Tensor, "n_vertices 3"],
+        canonical_orientations: Float[torch.Tensor, "n_vertices 4"],
     ) -> tuple[Float[torch.Tensor, "n_vertices 3"], Float[torch.Tensor, ""]]:
         """ """
         flame_params = torch.concatenate([
@@ -147,6 +166,16 @@ class AudioFineTuning(nn.Module):
         fusion = rearrange(fusion.squeeze(0), '(n_vertices c) -> n_vertices c', n_vertices=5443)
 
         return fusion, emb_loss
+
+
+class PerGaussianFineTuning(nn.Module):
+    """
+    Fine-tunes the rotation and scale of the gaussians.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        raise NotImplementedError
 
 
 class RiggedGaussianSplatting(pl.LightningModule):
@@ -429,17 +458,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
         # ---> pre-processing optimizers
         other_optimizers = {}
-        if hasattr(self, "rigging_params"):
-            if mode in ['rigged', 'dynamic']:
-                other_optimizers["rigging_params_flame_vertices"] = Adam(
-                    self.rigging_params.flame_code_books.parameters(),
-                    lr=self.learning_rates.rigging_params_flame_vertices_lr * batch_scaling,
-                )
-            if mode in ['inside_mouth', 'rigged', 'dynamic']:
-                other_optimizers["rigging_params_inner_mouth_vertices"] = Adam(
-                    self.rigging_params.inner_mouth_code_books.parameters(),
-                    lr=self.learning_rates.rigging_params_inner_mouth_vertices_lr * batch_scaling,
-                )
 
         if hasattr(self, "rotation_and_scale_adjustments"):
             if mode in ['rigged', 'dynamic']:
@@ -482,11 +500,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
         scheduler_list = list(schedulers.values())
         self.n_optimizers = len(optimizer_list)
 
-        if self.training_mode == 'rigged':
-            return [
-                other_optimizers['rigging_params_flame_vertices'],
-                other_optimizers['rigging_params_inner_mouth_vertices']
-            ]
         return optimizer_list, scheduler_list
 
     @property
@@ -588,11 +601,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
             gaussian_translations = gaussian_translations.permute(
                 1, 0, 2)  # (window_size, n_gaussians, 3)
 
-            # remove window size
-            gaussian_rotations = gaussian_rotations.squeeze(0)
-            gaussian_translations = gaussian_translations.squeeze(0)
-            barycentric_weights = barycentric_weights.squeeze(0)
-
             # apply the deformation field
             means = means + gaussian_translations
             quats = nn.functional.normalize(quats, p=2, dim=-1)
@@ -600,15 +608,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
             # per gaussian fine tuning
             if self.gaussian_splatting_settings.per_gaussian_motion_adjustment:
-                quats, scales = self.rotation_and_scale_adjustments.forward(
-                    means=means,
-                    quats=quats,
-                    translations=gaussian_translations,
-                    rotations=gaussian_rotations,
-                    barycentric_weights=barycentric_weights,
-                    scales=scales,
-                    per_gaussian_latent=features,
-                )
+                raise NotImplementedError
 
         # ---> se3 transformation
         if se3_transform is not None:
@@ -862,7 +862,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         sequence = self.viewer_sequence
         # frame = time_step if self.viewer_frame is None else self.viewer_frame
         frame = time_step
-        rigging_params = self.rigging_params.forward(sequence, frame)
+        # TODO: save a flame sequence or something
+        rigging_params = self.flame_head.forward(self.canonical_flame_params)
 
         # render
         image, _, depth, _ = self.forward(
@@ -1183,7 +1184,11 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
     def training_step(
         self,
-        batch: SingleFrameData,
+        batch: tuple[
+            SingleFrameData,
+            UnbatchedFlameParams,
+            Float[torch.Tensor, 'window_size 1024'],
+        ],
         batch_idx: int,
     ) -> torch.Tensor:
         """
@@ -1205,6 +1210,10 @@ class RiggedGaussianSplatting(pl.LightningModule):
             tic = time.time()
         t = time.time()
 
+        # unpack the batch
+        batch, flame_params, audio_features = batch
+        assert isinstance(batch, SingleFrameData)  # overwrite of type hint
+
         # Forward pass
         optimizers = self.optimizers()
         schedulers = self.lr_schedulers()
@@ -1213,7 +1222,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         if self.training_mode != 'rigged':
             splat_optimizers = {k: optimizers[i] for i, k in enumerate(self.splat_optimizer_keys)}
 
-        rigging_params = self.rigging_params.forward(batch.sequence_id, batch.time_step)
+        rigging_params = self.flame_head.forward(flame_params)
+        # TODO: add rigging fine_tuning here...
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             intrinsics=batch.intrinsics,
             world_2_cam=batch.world_2_cam,
@@ -1273,30 +1283,29 @@ class RiggedGaussianSplatting(pl.LightningModule):
             schedulers.step()
 
         # Post-backward densification
-        if self.training_mode != 'rigged':
-            match self.gaussian_splatting_settings.densification_mode:
-                case "default":
-                    self.strategy.step_post_backward(
-                        params=self.splats,
-                        optimizers=splat_optimizers,
-                        state=self.strategy_state,
-                        step=self.step,
-                        info=infos['default_infos'],
-                    )
+        match self.gaussian_splatting_settings.densification_mode:
+            case "default":
+                self.strategy.step_post_backward(
+                    params=self.splats,
+                    optimizers=splat_optimizers,
+                    state=self.strategy_state,
+                    step=self.step,
+                    info=infos['default_infos'],
+                )
 
-                case "monte_carlo_markov_chain":
-                    self.strategy.step_post_backward(
-                        params=self.splats,
-                        optimizers=splat_optimizers,
-                        state=self.strategy_state,
-                        step=self.step,
-                        info=infos['default_infos'],
-                        lr=schedulers.get_last_lr()[0],
-                    )
+            case "monte_carlo_markov_chain":
+                self.strategy.step_post_backward(
+                    params=self.splats,
+                    optimizers=splat_optimizers,
+                    state=self.strategy_state,
+                    step=self.step,
+                    info=infos['default_infos'],
+                    lr=schedulers.get_last_lr()[0],
+                )
 
-                case _:
-                    raise ValueError("Unknown densification mode: "
-                                     f"{self.gaussian_splatting_settings.densification_mode}")
+            case _:
+                raise ValueError("Unknown densification mode: "
+                                 f"{self.gaussian_splatting_settings.densification_mode}")
 
         # Log images
         if self.step % self.gaussian_splatting_settings.log_images_interval == 0:
@@ -1340,7 +1349,11 @@ class RiggedGaussianSplatting(pl.LightningModule):
     @torch.no_grad()
     def validation_step(
         self,
-        batch: SingleFrameData,
+        batch: tuple[
+            SingleFrameData,
+            UnbatchedFlameParams,
+            Float[torch.Tensor, 'window_size 1024'],
+        ],
         batch_idx: int,
     ) -> torch.Tensor:
         """
@@ -1362,8 +1375,12 @@ class RiggedGaussianSplatting(pl.LightningModule):
             tic = time.time()
         t = time.time()
 
+        # unpack the batch
+        batch, flame_params, audio_features = batch
+        assert isinstance(batch, SingleFrameData)  # overwrite of type hint
+
         # Forward pass
-        rigging_params = self.rigging_params.forward(batch.sequence_id, batch.time_step)
+        rigging_params = self.flame_head.forward(flame_params)
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             intrinsics=batch.intrinsics,
             world_2_cam=batch.world_2_cam,

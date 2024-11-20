@@ -25,6 +25,7 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from tqdm import tqdm
 
+from thesis.code_talker.models.lib.quantizer import VectorQuantizer
 from thesis.config import GaussianSplattingSettings, load_config
 from thesis.constants import (
     CANONICAL_FLAME_PARAMS,
@@ -48,26 +49,132 @@ from thesis.deformation_field.barycentric_weighting import (
 )
 from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
-from thesis.deformation_field.per_gaussian_fine_tuning_2 import (
-    RotationAndScaleAdjustments,
-)
-from thesis.deformation_field.rigging_params import RiggingParams
 from thesis.flame import FlameHeadWithInnerMouth
-from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
-from thesis.gaussian_splatting.initialize_splats import (
+from thesis.gaussian_splatting_legacy.camera_color_correction import (
+    LearnableColorCorrection,
+)
+from thesis.gaussian_splatting_legacy.initialize_splats import (
     flame_initialization,
     point_cloud_initialization,
     pre_trained_initialization,
     random_initialization,
 )
-from thesis.gaussian_splatting.screen_space_denoising import ScreenSpaceDenoising
-from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
+from thesis.gaussian_splatting_legacy.screen_space_denoising import ScreenSpaceDenoising
+from thesis.gaussian_splatting_legacy.view_dependent_coloring import (
+    ViewDependentColorMLP,
+)
 from thesis.utils import (
     apply_se3_to_orientation,
     apply_se3_to_point,
     assign_segmentation_class,
     quaternion_multiplication,
 )
+
+# what it needs to be able to do:
+# audio only
+# flame only
+# audio + flame
+# nothing at all
+# different window sizes
+# maybe bottle neck / quantization of the audio features
+
+
+class AudioToVertexFineTuning(nn.Module):
+    """
+    Fine-tunes the vertex positions with the audio features.
+    """
+
+    def __init__(
+        self,
+        audio_feature_dim: int = 1024,
+        audio_codebook_size: int = 64,  # if used
+        audio_beta_commitment_loss: float = 0.25,
+        flame_param_size: int = 113,
+        window_size: int = 17,
+        per_gaussian_latent_dim: int = 32,
+    ) -> None:
+        """
+        Adds pre vertex fine tuning to the gaussian splatting model.
+        """
+        super().__init__()
+
+        # audio
+        self.audio_squasher = nn.Sequential(
+            nn.Conv1d(audio_feature_dim, 512, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(512, 256, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(256, audio_embedding_dim, 3, padding=1),
+            nn.AdaptiveAvgPool1d(1),
+        )  # (batch, 1024, window_size) -> (batch, 128, 1)
+        self.audio_quantizer = VectorQuantizer(
+            n_e=audio_codebook_size,
+            e_dim=32,
+            beta=audio_beta_commitment_loss,
+        )  # (batch, 128, 1) -> (batch, 32, 1)
+
+        # flame params
+        self.flame_squasher = nn.Sequential(
+            nn.Conv1d(flame_param_size, 64, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(64, 32, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(32, 32, 3, padding=1),
+            nn.AdaptiveAvgPool1d(1),
+        )  # (batch, flame_param_size, window_size) -> (batch, 32, 1)
+
+        # fusion
+        self.fusion = nn.Sequential(
+            nn.Linear(32 + 32 + 3 + 4 + per_gaussian_latent_dim, 128),
+            nn.SiLU(),
+            nn.Linear(128, 256),
+            nn.SiLU(),
+            nn.Linear(256, 512),
+            nn.SiLU(),
+            nn.Linear(512, 3 + 4),
+        )
+
+    def forward(
+        self,
+        audio_features: Float[torch.Tensor, "window_size audio_feature_dim"],
+        flame_params: UnbatchedFlameParams,  # also windowed
+        per_vertex_latents: Float[torch.Tensor, "n_vertices latent_dim"],
+        canonical_positions: Float[torch.Tensor, "n_vertices 3"],
+        canonical_orientations: Float[torch.Tensor, "n_vertices 4"],
+    ) -> tuple[Float[torch.Tensor, "n_vertices 3"], Float[torch.Tensor, ""]]:
+        """ """
+        flame_params = torch.concatenate([
+            flame_params.expr,
+            flame_params.jaw,
+            flame_params.neck,
+            flame_params.scale,
+            flame_params.shape,
+        ])  # (window_size, flame_param_size)
+        flame_params = rearrange(flame_params.unsqueeze(0), 'b ws f -> b f ws')
+
+        audio_features = self.audio_squasher(audio_features.unsqueeze(0))  # (1, 32, 1)
+        audio_features = rearrange(audio_features, 'b f ws -> b ws f')  # (1, 1, 32)
+        audio_features, emb_loss, _ = self.audio_quantizer.forward(audio_features)  # (1, 32, 1)
+        audio_features = audio_features.squeeze(-1)  # (1, 32)
+
+        flame_params = self.flame_squasher.forward(flame_params)  # (1, 32, 1)
+        flame_params = flame_params.squeeze(-1)  # (1, 32)
+
+        fusion = torch.cat([audio_features, flame_params], dim=-1)  # (1, 64)
+        fusion = self.fusion.forward(fusion)  # (1, n_vertices * 3)
+        fusion = rearrange(fusion.squeeze(0), '(n_vertices c) -> n_vertices c', n_vertices=5443)
+
+        return fusion, emb_loss
+
+
+class PerGaussianFineTuning(nn.Module):
+    """
+    Fine-tunes the rotation and scale of the gaussians.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        raise NotImplementedError
 
 
 class RiggedGaussianSplatting(pl.LightningModule):
@@ -213,13 +320,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
         self.flame_knn = FlameKNN(k=3, canonical_params=self.canonical_flame_params)
         self.flame_mesh_extractor = FlameMeshSE3Extraction(self.flame_head)
 
-        # Rigging parameters
-        self.rigging_params = RiggingParams(self.train_sequences)
-
-        # Per-gaussian motion adjustment
-        if gaussian_splatting_settings.per_gaussian_motion_adjustment:
-            self.rotation_and_scale_adjustments = RotationAndScaleAdjustments(
-                gaussian_latent_dim=gaussian_splatting_settings.feature_dim)
+        # Fine Tuning
 
         # View-dependent color module (pre-processing)
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
@@ -356,17 +457,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
         # ---> pre-processing optimizers
         other_optimizers = {}
-        if hasattr(self, "rigging_params"):
-            if mode in ['rigged', 'dynamic']:
-                other_optimizers["rigging_params_flame_vertices"] = Adam(
-                    self.rigging_params.flame_code_books.parameters(),
-                    lr=self.learning_rates.rigging_params_flame_vertices_lr * batch_scaling,
-                )
-            if mode in ['inside_mouth', 'rigged', 'dynamic']:
-                other_optimizers["rigging_params_inner_mouth_vertices"] = Adam(
-                    self.rigging_params.inner_mouth_code_books.parameters(),
-                    lr=self.learning_rates.rigging_params_inner_mouth_vertices_lr * batch_scaling,
-                )
 
         if hasattr(self, "rotation_and_scale_adjustments"):
             if mode in ['rigged', 'dynamic']:
@@ -409,11 +499,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
         scheduler_list = list(schedulers.values())
         self.n_optimizers = len(optimizer_list)
 
-        if self.training_mode == 'rigged':
-            return [
-                other_optimizers['rigging_params_flame_vertices'],
-                other_optimizers['rigging_params_inner_mouth_vertices']
-            ]
         return optimizer_list, scheduler_list
 
     @property
@@ -515,11 +600,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
             gaussian_translations = gaussian_translations.permute(
                 1, 0, 2)  # (window_size, n_gaussians, 3)
 
-            # remove window size
-            gaussian_rotations = gaussian_rotations.squeeze(0)
-            gaussian_translations = gaussian_translations.squeeze(0)
-            barycentric_weights = barycentric_weights.squeeze(0)
-
             # apply the deformation field
             means = means + gaussian_translations
             quats = nn.functional.normalize(quats, p=2, dim=-1)
@@ -527,15 +607,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
             # per gaussian fine tuning
             if self.gaussian_splatting_settings.per_gaussian_motion_adjustment:
-                quats, scales = self.rotation_and_scale_adjustments.forward(
-                    means=means,
-                    quats=quats,
-                    translations=gaussian_translations,
-                    rotations=gaussian_rotations,
-                    barycentric_weights=barycentric_weights,
-                    scales=scales,
-                    per_gaussian_latent=features,
-                )
+                raise NotImplementedError
 
         # ---> se3 transformation
         if se3_transform is not None:
@@ -789,7 +861,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
         sequence = self.viewer_sequence
         # frame = time_step if self.viewer_frame is None else self.viewer_frame
         frame = time_step
-        rigging_params = self.rigging_params.forward(sequence, frame)
+        # TODO: save a flame sequence or something
+        rigging_params = self.flame_head.forward(self.canonical_flame_params)
 
         # render
         image, _, depth, _ = self.forward(

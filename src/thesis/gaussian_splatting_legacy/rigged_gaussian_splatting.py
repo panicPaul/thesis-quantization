@@ -15,14 +15,15 @@ import torch
 import viser
 from einops import rearrange, repeat
 from gsplat import DefaultStrategy, MCMCStrategy, rasterization, rasterization_2dgs
-from jaxtyping import Float, Int
+from jaxtyping import Float, Int, UInt8
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig
 from torch import nn
-from torch.optim import Adam, AdamW, SparseAdam
+from torch.optim import Adam, AdamW  # , SparseAdam
 from torch.utils.data import DataLoader
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from tqdm import tqdm
 
 from thesis.config import GaussianSplattingSettings, load_config
 from thesis.constants import (
@@ -36,6 +37,7 @@ from thesis.constants import (
 )
 from thesis.data_management import (
     SequenceManager,
+    SequentialMultiSequenceDataset,
     SingleSequenceDataset,
     UnbatchedFlameParams,
 )
@@ -51,20 +53,24 @@ from thesis.deformation_field.per_gaussian_fine_tuning_2 import (
 )
 from thesis.deformation_field.rigging_params import RiggingParams
 from thesis.flame import FlameHeadWithInnerMouth
-from thesis.gaussian_splatting.camera_color_correction import LearnableColorCorrection
-from thesis.gaussian_splatting.initialize_splats import (
+from thesis.gaussian_splatting_legacy.camera_color_correction import (
+    LearnableColorCorrection,
+)
+from thesis.gaussian_splatting_legacy.initialize_splats import (
     flame_initialization,
-    inside_mouth_flame_initialization,
     point_cloud_initialization,
     pre_trained_initialization,
     random_initialization,
 )
-from thesis.gaussian_splatting.screen_space_denoising import ScreenSpaceDenoising
-from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
+from thesis.gaussian_splatting_legacy.screen_space_denoising import ScreenSpaceDenoising
+from thesis.gaussian_splatting_legacy.view_dependent_coloring import (
+    ViewDependentColorMLP,
+)
 from thesis.utils import (
     apply_se3_to_orientation,
     apply_se3_to_point,
     assign_segmentation_class,
+    quaternion_multiplication,
 )
 
 
@@ -177,17 +183,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 raise ValueError("Unknown initialization mode: "
                                  f"{gaussian_splatting_settings.initialization_mode}")
 
-        # Initialize the inside mouth splats
-        self.inside_mouth_splats = nn.ParameterDict(
-            inside_mouth_flame_initialization(
-                flame_params=self.canonical_flame_params,
-                scene_scale=gaussian_splatting_settings.scene_scale,
-                feature_dim=gaussian_splatting_settings.feature_dim,
-                colors_sh_degree=gaussian_splatting_settings.sh_degree,
-                initialize_spherical_harmonics=not gaussian_splatting_settings
-                .use_view_dependent_color_mlp,
-            ))
-
         # Initialize the densification strategy
         refine_stop_iteration = gaussian_splatting_settings.refine_stop_iteration
         if isinstance(refine_stop_iteration, float):
@@ -202,11 +197,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
                 )
-                self.inside_mouth_strategy = DefaultStrategy(
-                    refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
-                    refine_stop_iter=refine_stop_iteration,
-                    verbose=True,
-                )
+
             case "monte_carlo_markov_chain":
                 self.strategy = MCMCStrategy(
                     refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
@@ -214,17 +205,11 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     verbose=True,
                     cap_max=gaussian_splatting_settings.cap_max,
                 )
-                self.inside_mouth_strategy = MCMCStrategy(
-                    refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
-                    refine_stop_iter=refine_stop_iteration,
-                    verbose=True,
-                    cap_max=gaussian_splatting_settings.cap_max,
-                )
+
             case _:
                 raise ValueError("Unknown densification mode: "
                                  f"{gaussian_splatting_settings.densification_mode}")
         self.strategy_state = self.strategy.initialize_state()
-        self.inside_mouth_strategy_state = self.inside_mouth_strategy.initialize_state()
 
         # deformation_field (pre-processing)
         # non-optimizable
@@ -288,6 +273,36 @@ class RiggedGaussianSplatting(pl.LightningModule):
         self.lpips = LearnedPerceptualImagePatchSimilarity(
             net_type=gaussian_splatting_settings.lpips_network, normalize=True)
 
+    # def on_save_checkpoint(self, checkpoint) -> None:
+    #     """
+    #     Remove specific state_dict keys before saving.
+
+    #     Args:
+    #         checkpoint (dict): The checkpoint dictionary.
+    #     """
+    #     # Remove specific state_dict keys before saving
+    #     state_dict = checkpoint["state_dict"]
+
+    #     # Create a list of keys to remove
+    #     match self.training_mode:
+    #         case 'static':
+    #             for key in state_dict.keys():
+    #                 if key.startswith("rigging_params"):
+    #                     del state_dict[key]
+    #                 if key.startswith("rotation_and_scale_adjustments"):
+    #                     del state_dict[key]
+    #                 if key.startswith("lpips"):
+    #                     del state_dict[key]
+    #         case _:
+    #             for key in state_dict.keys():
+    #                 if key.startswith("lpips"):
+    #                     del state_dict[key]
+
+    # def on_load_checkpoint(self, checkpoint) -> None:
+    #     """ Load the checkpoint. """
+    #     state_dict = checkpoint["state_dict"]
+    #     self.load_state_dict(state_dict)
+
     def configure_optimizers(self):
         """
         Returns:
@@ -343,53 +358,16 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
             )
 
-        # ---> inside mouth splat optimizers
-        enable_inside_mouth_splats = 1.0 if mode in ['static', 'dynamic', 'inside_mouth'] else 0.0
-        inside_mouth_splat_optimizers = {
-            name:
-                Adam(
-                    [{
-                        "params": self.inside_mouth_splats[name],
-                        "lr": lr * enable_inside_mouth_splats,
-                        "name": name,
-                    }],
-                    eps=1e-15 / batch_scaling,
-                    # TODO: check betas logic when cfg.batch_size is larger than 10 betas[0]
-                    #       will be zero.
-                    betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
-                ) for name, lr in splats_learning_rates.items()
-        }
-        if not self.gaussian_splatting_settings.use_view_dependent_color_mlp:
-            inside_mouth_splat_optimizers["sh0"] = Adam(
-                [self.inside_mouth_splats["sh0"]],
-                lr=self.learning_rates.sh0_lr * batch_scaling * enable_inside_mouth_splats,
-                eps=1e-15 / batch_scaling,
-                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
-            )
-            inside_mouth_splat_optimizers["shN"] = Adam(
-                [self.inside_mouth_splats["shN"]],
-                lr=(self.learning_rates.sh0_lr / 20) * batch_scaling * enable_inside_mouth_splats,
-                eps=1e-15 / batch_scaling,
-                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
-            )
-        else:
-            inside_mouth_splat_optimizers['colors'] = Adam(
-                [self.inside_mouth_splats['colors']],
-                lr=self.learning_rates.color_lr * batch_scaling * enable_inside_mouth_splats,
-                eps=1e-15 / batch_scaling,
-                betas=(1 - batch_size * (1-0.9), 1 - batch_size * (1-0.999)),
-            )
-
         # ---> pre-processing optimizers
         other_optimizers = {}
         if hasattr(self, "rigging_params"):
             if mode in ['rigged', 'dynamic']:
-                other_optimizers["rigging_params_flame_vertices"] = SparseAdam(
+                other_optimizers["rigging_params_flame_vertices"] = Adam(
                     self.rigging_params.flame_code_books.parameters(),
                     lr=self.learning_rates.rigging_params_flame_vertices_lr * batch_scaling,
                 )
             if mode in ['inside_mouth', 'rigged', 'dynamic']:
-                other_optimizers["rigging_params_inner_mouth_vertices"] = SparseAdam(
+                other_optimizers["rigging_params_inner_mouth_vertices"] = Adam(
                     self.rigging_params.inner_mouth_code_books.parameters(),
                     lr=self.learning_rates.rigging_params_inner_mouth_vertices_lr * batch_scaling,
                 )
@@ -429,15 +407,17 @@ class RiggedGaussianSplatting(pl.LightningModule):
         schedulers["means"] = torch.optim.lr_scheduler.ExponentialLR(
             splat_optimizers["means"],
             gamma=0.01**(1.0 / self.gaussian_splatting_settings.train_iterations))
-        schedulers['inside_mouth_means'] = torch.optim.lr_scheduler.ExponentialLR(
-            inside_mouth_splat_optimizers["means"],
-            gamma=0.01**(1.0 / self.gaussian_splatting_settings.train_iterations))
-        optimizer_list = list(splat_optimizers.values()) + list(
-            inside_mouth_splat_optimizers.values()) + list(other_optimizers.values())
+
+        optimizer_list = list(splat_optimizers.values()) + list(other_optimizers.values())
         self.splat_optimizer_keys = list(splat_optimizers.keys())
-        self.inside_mouth_splat_optimizer_keys = list(inside_mouth_splat_optimizers.keys())
         scheduler_list = list(schedulers.values())
         self.n_optimizers = len(optimizer_list)
+
+        if self.training_mode == 'rigged':
+            return [
+                other_optimizers['rigging_params_flame_vertices'],
+                other_optimizers['rigging_params_inner_mouth_vertices']
+            ]
         return optimizer_list, scheduler_list
 
     @property
@@ -457,7 +437,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
         cur_sh_degree: int | None = None,
         se3_transform: UnbatchedSE3Transform | None = None,
         rigging_params: Float[torch.Tensor, 'n_vertices 3'] | None = None,
-        mode: Literal["default", "inside_mouth"] = "default",
     ) -> tuple[
             Float[torch.Tensor, "n_gaussians 3"],
             Float[torch.Tensor, "n_gaussians 4"],
@@ -496,32 +475,19 @@ class RiggedGaussianSplatting(pl.LightningModule):
         """
 
         # ---> Get the splats
-        if mode == "default":
-            means = self.splats["means"]
-            quats = self.splats["quats"]
-            features = self.splats["features"]
-            scales = torch.exp(self.splats["scales"])
-            opacities = torch.sigmoid(self.splats["opacities"])
-            if hasattr(self, "view_dependent_color_mlp"):
-                colors = self.splats["colors"]
-            else:
-                colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)
+        means = self.splats["means"]
+        quats = self.splats["quats"]
+        features = self.splats["features"]
+        scales = torch.exp(self.splats["scales"])
+        opacities = torch.sigmoid(self.splats["opacities"])
+        if hasattr(self, "view_dependent_color_mlp"):
+            colors = self.splats["colors"]
         else:
-            means = self.inside_mouth_splats["means"]
-            quats = self.inside_mouth_splats["quats"]
-            features = self.inside_mouth_splats["features"]
-            scales = torch.exp(self.inside_mouth_splats["scales"])
-            opacities = torch.sigmoid(self.inside_mouth_splats["opacities"])
-            if hasattr(self, "view_dependent_color_mlp"):
-                colors = self.inside_mouth_splats["colors"]
-            else:
-                colors = torch.cat(
-                    [self.inside_mouth_splats["sh0"], self.inside_mouth_splats["shN"]], 1)
+            colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)
 
         # ---> Apply the deformation field
-        if rigging_params is not None and self.training_mode in [
-                'rigged', 'dynamic', 'inside_mouth'
-        ]:
+        if rigging_params is not None:
+            # and self.training_mode in ['rigged', 'dynamic', 'inside_mouth']:
             # query deformation_field for windowed rotation and translations
             indices, _ = self.flame_knn.forward(means)
             canonical_vertices = self.flame_head.forward(self.canonical_flame_params)
@@ -533,9 +499,12 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
             # NOTE: I do not want to have to deal with spherical interpolation and this should be
             #       close enough
-            gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
-            gaussian_rotations = gaussian_rotations.permute(1, 0,
-                                                            2)  # (window_size, n_gaussians, 4)
+            # gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
+            # gaussian_rotations = gaussian_rotations.permute(1, 0,
+            #                                                 2)  # (window_size, n_gaussians, 4)
+
+            # (n_gaussians, k, window_size, 4) -> (window_size, n_gaussians, k, 4)
+            gaussian_rotations = gaussian_rotations.permute(2, 0, 1, 3)
 
             vertex_translations = vertex_translations.permute(1, 0,
                                                               2)  # (n_vertices, window_size, 3)
@@ -555,6 +524,11 @@ class RiggedGaussianSplatting(pl.LightningModule):
             gaussian_translations = gaussian_translations.squeeze(0)
             barycentric_weights = barycentric_weights.squeeze(0)
 
+            # apply the deformation field
+            means = means + gaussian_translations
+            quats = nn.functional.normalize(quats, p=2, dim=-1)
+            quats = quaternion_multiplication(gaussian_rotations[:, 0], quats)
+
             # per gaussian fine tuning
             if self.gaussian_splatting_settings.per_gaussian_motion_adjustment:
                 quats, scales = self.rotation_and_scale_adjustments.forward(
@@ -564,12 +538,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
                     rotations=gaussian_rotations,
                     barycentric_weights=barycentric_weights,
                     scales=scales,
+                    per_gaussian_latent=features,
                 )
-                mean_motion_adjustment = torch.norm(gaussian_translations, dim=-1).mean()
-                if mode == "default":
-                    infos['per_gaussian_movement'] = mean_motion_adjustment
-                else:
-                    infos['per_gaussian_inside_mouth_movement'] = mean_motion_adjustment
 
         # ---> se3 transformation
         if se3_transform is not None:
@@ -600,8 +570,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
         infos: dict,
         render_images: Float[torch.Tensor, "cam H W 3"],
         render_alphas: Float[torch.Tensor, "cam H W 1"],
-        inside_mouth_render_images: Float[torch.Tensor, "cam H W 3"],
-        inside_mouth_render_alphas: Float[torch.Tensor, "cam H W 1"],
         background: Float[torch.Tensor, "3"],
         color_correction: Float[torch.Tensor, "cam 3 3"] | None = None,
         camera_indices: Int[torch.Tensor, "cam"] | None = None,
@@ -628,13 +596,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
         # Add images to the infos
         infos['default_rendered_images'] = render_images
         infos['default_rendered_alphas'] = render_alphas
-        infos['inside_mouth_rendered_images'] = inside_mouth_render_images
-        infos['inside_mouth_rendered_alphas'] = inside_mouth_render_alphas
-
-        # Merge renderings (we assume that the inside mouth splats are always behind the default)
-        render_images = render_images + (1-render_alphas) * inside_mouth_render_images
-        render_alphas = render_alphas = render_alphas + (
-            1-render_alphas) * inside_mouth_render_alphas
 
         # Apply screen-space denoising
         infos['pre_denoised_rendered_images'] = render_images
@@ -758,18 +719,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
             cur_sh_degree=cur_sh_degree,
             se3_transform=se3_transform,
             rigging_params=rigging_params,
-            mode="default",
         )
-        inside_mouth_means, inside_mouth_quats, inside_mouth_scales, inside_mouth_opacities, \
-            inside_mouth_colors, infos = self.pre_processing(
-                infos=infos,
-                cam_2_world=cam_2_world,
-                camera_indices=camera_indices,
-                cur_sh_degree=cur_sh_degree,
-                se3_transform=se3_transform,
-                rigging_params=rigging_params,
-                mode="inside_mouth",
-            )
 
         # ------------------------------- Rasterization ------------------------------- #
         # Render the images
@@ -786,7 +736,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
             height=image_height,
             absgrad=self.gaussian_splatting_settings.densification_mode == 'default',
             sh_degree=cur_sh_degree if not hasattr(self, "view_dependent_color_mlp") else None,
-            packed=False,
+            packed=True,
+            sparse_grad=False,
         )
         match self.gaussian_splatting_settings.rasterization_mode:
             case "default" | "3dgs":
@@ -797,36 +748,11 @@ class RiggedGaussianSplatting(pl.LightningModule):
         depth_maps = render_images[:, :, :, 3:]  # get depth maps
         render_images = render_images[:, :, :, :3]  # get RGB channels
 
-        # Render the inside mouth images
-        ret = self.rasterize(
-            means=inside_mouth_means,
-            quats=inside_mouth_quats,
-            scales=inside_mouth_scales,
-            opacities=inside_mouth_opacities,
-            colors=inside_mouth_colors,
-            render_mode="RGB",  # we don't perform depth blending for inside mouth splats
-            viewmats=world_2_cam,
-            Ks=intrinsics,
-            width=image_width,
-            height=image_height,
-            absgrad=self.gaussian_splatting_settings.densification_mode == 'default',
-            sh_degree=cur_sh_degree if not hasattr(self, "view_dependent_color_mlp") else None,
-            packed=False,
-        )
-        match self.gaussian_splatting_settings.rasterization_mode:
-            case "default" | "3dgs":
-                inside_mouth_render_images, inside_mouth_render_alphas, new_infos = ret
-            case "2dgs":
-                inside_mouth_render_images, inside_mouth_render_alphas, _, _, _, _, new_infos = ret
-        infos['inside_mouth_infos'] = new_infos
-
         # ------------------------------- Post-processing ------------------------------ #
         render_images, render_alphas, infos = self.post_processing(
             infos=infos,
             render_images=render_images,
             render_alphas=render_alphas,
-            inside_mouth_render_images=inside_mouth_render_images,
-            inside_mouth_render_alphas=inside_mouth_render_alphas,
             background=background,
             color_correction=color_correction,
             camera_indices=camera_indices,
@@ -865,7 +791,8 @@ class RiggedGaussianSplatting(pl.LightningModule):
 
         # get the rigging params
         sequence = self.viewer_sequence
-        frame = time_step if self.viewer_frame is None else self.viewer_frame
+        # frame = time_step if self.viewer_frame is None else self.viewer_frame
+        frame = time_step
         rigging_params = self.rigging_params.forward(sequence, frame)
 
         # render
@@ -917,7 +844,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
         target_alphas: Float[torch.Tensor, "cam H W"],
         target_segmentation_mask: Float[torch.Tensor, "cam H W 3"],
         infos: dict,
-        mode: Literal["default", "merged"] = "default",
         denoised_images: Float[torch.Tensor, "cam H W 3"] | None = None,
     ) -> dict[str, Float[torch.Tensor, '']]:
         """
@@ -944,16 +870,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
             background_mask = torch.where(segmentation_classes == 0, 1, 0)
             jumper_mask = torch.where(segmentation_classes == 2, 1, 0)
             target_alphas = target_alphas * (1-jumper_mask) * (1-background_mask)
-        if mode == "default":
-            # NOTE: the eyes are the only other part that is not just stretching and deforming
-            #       so it makes sense to include them here imo.
-            #       One of the disadvantages is that the eye lashes might get clipped.
-            # TODO: keep an eye on this (pun intended)
-            left_eye_mask = torch.where(segmentation_classes == 10, 1, 0)
-            right_eye_mask = torch.where(segmentation_classes == 11, 1, 0)
-            inner_mouth_mask = torch.where(segmentation_classes == 14, 1, 0)
-            target_alphas = target_alphas * (1-inner_mouth_mask) * (1-left_eye_mask) * (
-                1-right_eye_mask)
         alpha_map = repeat(target_alphas, "cam H W -> cam H W f", f=3)
         background = infos['background']
         background = repeat(
@@ -1167,13 +1083,9 @@ class RiggedGaussianSplatting(pl.LightningModule):
             loss = loss + eyebrows_ssim_loss * self.gaussian_splatting_settings.eyebrows_ssim_loss
 
         loss_dict["loss"] = loss
-
-        # add the mode to the key
-        ret = {}
-        for key, value in loss_dict.items():
-            key = f"{mode}/{key}"
-            ret[key] = value
-        return ret
+        if torch.isnan(loss):
+            raise ValueError("Loss is NaN")
+        return loss_dict
 
     def log_image(
         self,
@@ -1229,10 +1141,9 @@ class RiggedGaussianSplatting(pl.LightningModule):
         schedulers = self.lr_schedulers()
         for opt in optimizers:
             opt.zero_grad()
-        splat_optimizers = {k: optimizers[i] for i, k in enumerate(self.splat_optimizer_keys)}
-        inside_mouth_splat_optimizers = {
-            k: optimizers[i] for i, k in enumerate(self.inside_mouth_splat_optimizer_keys)
-        }
+        if self.training_mode != 'rigged':
+            splat_optimizers = {k: optimizers[i] for i, k in enumerate(self.splat_optimizer_keys)}
+
         rigging_params = self.rigging_params.forward(batch.sequence_id, batch.time_step)
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             intrinsics=batch.intrinsics,
@@ -1248,20 +1159,14 @@ class RiggedGaussianSplatting(pl.LightningModule):
         )
 
         # Pre-backward densification
-        self.strategy.step_pre_backward(
-            params=self.splats,
-            optimizers=splat_optimizers,
-            state=self.strategy_state,
-            step=self.step,
-            info=infos['default_infos'],
-        )
-        self.inside_mouth_strategy.step_pre_backward(
-            params=self.inside_mouth_splats,
-            optimizers=splat_optimizers,
-            state=self.strategy_state,
-            step=self.step,
-            info=infos['inside_mouth_infos'],
-        )
+        if self.training_mode != 'rigged':
+            self.strategy.step_pre_backward(
+                params=self.splats,
+                optimizers=splat_optimizers,
+                state=self.strategy_state,
+                step=self.step,
+                info=infos['default_infos'],
+            )
 
         # Loss computation and logging
         if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
@@ -1276,89 +1181,53 @@ class RiggedGaussianSplatting(pl.LightningModule):
             target_alphas=batch.alpha_map,
             target_segmentation_mask=batch.segmentation_mask,
             infos=infos,
-            mode='default',
             denoised_images=denoised_images,
         )
-        merged_loss_dict = self.compute_loss(
-            rendered_images=infos['pre_denoised_rendered_images'],
-            rendered_alphas=rendered_alphas,
-            target_images=batch.image,
-            target_alphas=batch.alpha_map,
-            target_segmentation_mask=batch.segmentation_mask,
-            infos=infos,
-            mode='merged',
-            denoised_images=denoised_images,
-        )
-        loss_dict = loss_dict | merged_loss_dict
-        loss = loss_dict["default/loss"] + loss_dict["merged/loss"]
-        # loss = merged_loss_dict["merged/loss"]
-        # loss_dict = merged_loss_dict
+        loss = loss_dict['loss']
 
         for key, value in loss_dict.items():
             self.log(f'train_{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
-        if 'default_per_gaussian_movement' in infos:
+        if 'per_gaussian_movement' in infos:
             self.log(
-                'default_per_gaussian_movement',
+                'per_gaussian_movement',
                 infos['default_per_gaussian_movement'],
                 on_step=True,
                 on_epoch=False)
-        if 'merged_per_gaussian_movement' in infos:
-            self.log(
-                'merged_per_gaussian_movement',
-                infos['merged_per_gaussian_movement'],
-                on_step=True,
-                on_epoch=False)
+
         self.log('num_gaussians', self.splats['means'].shape[0], on_step=True, on_epoch=False)
-        self.log(
-            'num_inside_mouth_gaussians',
-            self.inside_mouth_splats['means'].shape[0],
-            on_step=True,
-            on_epoch=False)
 
         # Backward pass and optimization
         self.manual_backward(loss)
         for opt in optimizers:
             opt.step()
-        for sched in schedulers:
-            sched.step()
+        if self.training_mode != 'rigged':
+            schedulers.step()
 
         # Post-backward densification
-        match self.gaussian_splatting_settings.densification_mode:
-            case "default":
-                self.strategy.step_post_backward(
-                    params=self.splats,
-                    optimizers=splat_optimizers,
-                    state=self.strategy_state,
-                    step=self.step,
-                    info=infos['default_infos'],
-                )
-                self.inside_mouth_strategy.step_post_backward(
-                    params=self.inside_mouth_splats,
-                    optimizers=inside_mouth_splat_optimizers,
-                    state=self.strategy_state,
-                    step=self.step,
-                    info=infos['inside_mouth_infos'],
-                )
-            case "monte_carlo_markov_chain":
-                self.strategy.step_post_backward(
-                    params=self.splats,
-                    optimizers=splat_optimizers,
-                    state=self.strategy_state,
-                    step=self.step,
-                    info=infos['default_infos'],
-                    lr=schedulers[0].get_last_lr()[0],
-                )
-                self.inside_mouth_strategy.step_post_backward(
-                    params=self.inside_mouth_splats,
-                    optimizers=inside_mouth_splat_optimizers,
-                    state=self.strategy_state,
-                    step=self.step,
-                    info=infos['inside_mouth_infos'],
-                    lr=schedulers[1].get_last_lr()[0],
-                )
-            case _:
-                raise ValueError("Unknown densification mode: "
-                                 f"{self.gaussian_splatting_settings.densification_mode}")
+        if self.training_mode != 'rigged':
+            match self.gaussian_splatting_settings.densification_mode:
+                case "default":
+                    self.strategy.step_post_backward(
+                        params=self.splats,
+                        optimizers=splat_optimizers,
+                        state=self.strategy_state,
+                        step=self.step,
+                        info=infos['default_infos'],
+                    )
+
+                case "monte_carlo_markov_chain":
+                    self.strategy.step_post_backward(
+                        params=self.splats,
+                        optimizers=splat_optimizers,
+                        state=self.strategy_state,
+                        step=self.step,
+                        info=infos['default_infos'],
+                        lr=schedulers.get_last_lr()[0],
+                    )
+
+                case _:
+                    raise ValueError("Unknown densification mode: "
+                                     f"{self.gaussian_splatting_settings.densification_mode}")
 
         # Log images
         if self.step % self.gaussian_splatting_settings.log_images_interval == 0:
@@ -1368,13 +1237,6 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 right_image=rendered_images[0],
                 step=self.step,
                 name="train/gt_and_merged",
-            )
-            # default, inside mouth
-            self.log_image(
-                left_image=infos['default_rendered_images'][0],
-                right_image=infos['inside_mouth_rendered_images'][0],
-                step=self.step,
-                name="train/default_and_inside_mouth",
             )
             # rendered denoised (if screen space denoising is enabled)
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
@@ -1459,21 +1321,9 @@ class RiggedGaussianSplatting(pl.LightningModule):
             target_alphas=batch.alpha_map,
             target_segmentation_mask=batch.segmentation_mask,
             infos=infos,
-            mode='default',
             denoised_images=denoised_images,
         )
-        merged_loss_dict = self.compute_loss(
-            rendered_images=infos['pre_denoised_rendered_images'],
-            rendered_alphas=rendered_alphas,
-            target_images=batch.image,
-            target_alphas=batch.alpha_map,
-            target_segmentation_mask=batch.segmentation_mask,
-            infos=infos,
-            mode='merged',
-            denoised_images=denoised_images,
-        )
-        loss_dict = loss_dict | merged_loss_dict
-        loss = loss_dict["default/loss"] + loss_dict["merged/loss"]
+        loss = loss_dict['loss']
 
         for key, value in loss_dict.items():
             self.log(f'val_{key}', value, on_step=True, on_epoch=False, prog_bar=(key == "loss"))
@@ -1487,13 +1337,7 @@ class RiggedGaussianSplatting(pl.LightningModule):
                 step=self.step,
                 name="val/gt_and_merged",
             )
-            # default, inside mouth
-            self.log_image(
-                left_image=infos['default_rendered_images'][0],
-                right_image=infos['inside_mouth_rendered_images'][0],
-                step=self.step,
-                name="val/default_and_inside_mouth",
-            )
+
             # rendered denoised (if screen space denoising is enabled)
             if self.gaussian_splatting_settings.screen_space_denoising_mode != "none":
                 self.log_image(
@@ -1551,17 +1395,78 @@ class RiggedGaussianSplatting(pl.LightningModule):
         self.eval()
         sm = SequenceManager(sequence)
         n_frames = len(sm)
-        num_frames = 1 if frame is not None else n_frames
+        # n_frames = 1 if frame is not None else n_frames
         self.viewer = nerfview.Viewer(
             server=self.server,
             render_fn=self.render,
             mode=mode,
-            num_frames=num_frames,
+            num_frames=n_frames,
         )
+
+    # ================================================================================= #
+    #                                 Video Loops                                       #
+    # ================================================================================= #
+
+    def render_video(
+        self,
+        intrinsics: Float[torch.Tensor, 'time 3 3'],
+        world_2_cam: Float[torch.Tensor, 'time 4 4'],
+        image_height: int,
+        image_width: int,
+        se_transforms: UnbatchedSE3Transform,
+        rigging_params: Float[torch.Tensor, 'time n_vertices 3'],
+        background: Float[torch.Tensor, '3'] | None = None,
+    ) -> UInt8[np.ndarray, 'time H W 3']:
+        """
+        Renders a video.
+
+        Args:
+            intrinsics (torch.Tensor): The intrinsics, shape: `(time, 3, 3)`.
+            world_2_cam (torch.Tensor): The world to camera transformation, shape: `(time, 4, 4)`.
+            image_height (int): The image height.
+            image_width (int): The image width.
+            se_transforms (UnbatchedSE3Transform): The SE3 transforms.
+            rigging_params (torch.Tensor): The rigging parameters, shape: `(time, n_vertices, 3)`.
+            background (torch.Tensor): The background, shape: `(time, 3)`.
+
+        Returns:
+            np.ndarray: The video.
+        """
+        self.eval()
+        self.cuda()
+        video = torch.zeros((len(intrinsics), image_height, image_width, 3), device='cuda')
+
+        for t in tqdm(range(len(intrinsics)), desc="Rendering video"):
+            cur_intrinsics = intrinsics[t:t + 1]
+            cur_world_2_cam = world_2_cam[t:t + 1]
+            cur_se_transform = UnbatchedSE3Transform(
+                rotation=se_transforms.rotation[t:t + 1],
+                translation=se_transforms.translation[t:t + 1],
+            )
+            rigging_params_t = rigging_params[t]
+
+            rendered_images, _, _, _ = self.forward(
+                intrinsics=cur_intrinsics,
+                world_2_cam=cur_world_2_cam,
+                cam_2_world=None,
+                image_height=image_height,
+                image_width=image_width,
+                color_correction=None,
+                cur_sh_degree=None,
+                se3_transform=cur_se_transform,
+                camera_indices=None,
+                rigging_params=rigging_params_t,
+                background=background,
+            )
+            video[t] = rendered_images[0]
+
+        video = video * 255
+        video = video.cpu().numpy().astype(np.uint8)
+        return video
 
 
 # ==================================================================================== #
-#                                 Train 8 Loop                                          #
+#                                 Training Loops                                       #
 # ==================================================================================== #
 
 
@@ -1581,7 +1486,7 @@ def train_static(
         overwrite (bool): Whether to overwrite the existing model.
 
     Returns:
-        int: The port number. Useful when fine-tuning the rigid parameters.
+        int: The port number. Useful when fine-tuning the rigging sparameters.
     """
 
     # set up model
@@ -1605,12 +1510,7 @@ def train_static(
     params = model.splats
     optimizers, _ = model.configure_optimizers()
     splat_optimizers = {k: optimizers[i] for i, k in enumerate(model.splat_optimizer_keys)}
-    inside_mouth_splat_optimizers = {
-        k: optimizers[i] for i, k in enumerate(model.inside_mouth_splat_optimizer_keys)
-    }
     model.strategy.check_sanity(params, splat_optimizers)
-    model.inside_mouth_strategy.check_sanity(model.inside_mouth_splats,
-                                             inside_mouth_splat_optimizers)
 
     # get datasets
     train_set = SingleSequenceDataset(
@@ -1650,13 +1550,296 @@ def train_static(
         port = model.start_viewer(mode="training", sequence=sequence, frame=time_step, port=port)
 
     # train
-    logger = TensorBoardLogger("tb_logs/rigid_gs/static", name=config.name)
+    logger = TensorBoardLogger("tb_logs/rigged_gs/static", name=config.name)
+    optimizers, _ = model.configure_optimizers()  # needed to get number of optimizers
+    n_optimizers = len(optimizers)
+    trainer = pl.Trainer(
+        logger=logger,
+        max_epochs=None,
+        max_steps=config.gaussian_splatting_settings.train_iterations * n_optimizers,
+        val_check_interval=500,
+        check_val_every_n_epoch=None,
+    )
+    trainer.fit(model, train_loader, val_loader)
+
+    return port
+
+
+def fine_tune_static(
+    config_path: str,
+    fine_tuning_steps: int,
+    n_additional_gaussians: int,
+    sequence: int = CANONICAL_SEQUENCE_FRAME[0],
+    time_step: int = CANONICAL_SEQUENCE_FRAME[1],
+    port: int | None = None,
+) -> int:
+    """
+    Train loop for the static mode.
+
+    Args:
+        config_path (str): Path to the configuration file.
+        sequence (int): The sequence.
+        time_step (int): The time step.
+        overwrite (bool): Whether to overwrite the existing model.
+
+    Returns:
+        int: The port number. Useful when fine-tuning the rigging parameters.
+    """
+    raise NotImplementedError("Fine-tuning static mode is not yet implemented.")
+    # Change config params
+    config = load_config(config_path)
+
+    # set up model
+    model = RiggedGaussianSplatting(
+        train_sequences=config.train_sequences,
+        gaussian_splatting_settings=config.gaussian_splatting_settings,
+        learning_rates=config.learning_rates,
+        enable_viewer=config.enable_viewer,
+        training_mode='static',
+    )
+    if config.compile:
+        # model._compile()
+        print("Compiling...", end="\t")
+        model.compile()
+        print("Done.")
+
+    torch.set_float32_matmul_precision('high')
+
+    # sanity checks
+    params = model.splats
+    optimizers, _ = model.configure_optimizers()
+    splat_optimizers = {k: optimizers[i] for i, k in enumerate(model.splat_optimizer_keys)}
+    model.strategy.check_sanity(params, splat_optimizers)
+
+    # get datasets
+    train_set = SingleSequenceDataset(
+        cameras=TRAIN_CAMS,
+        sequence=sequence,
+        start_idx=time_step,
+        end_idx=time_step + 1,
+        n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
+        length_multiplier=500,
+    )
+    val_set = SingleSequenceDataset(
+        cameras=TEST_CAMS,
+        sequence=sequence,
+        start_idx=time_step,
+        end_idx=time_step + 1,
+        n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
+    )
+
+    # get loaders
+    train_loader = DataLoader(
+        train_set,
+        batch_size=None,
+        shuffle=True,
+        num_workers=config.num_train_workers,
+        persistent_workers=True)
+    val_loader = DataLoader(
+        val_set,
+        batch_size=None,
+        shuffle=False,
+        num_workers=config.num_val_workers,
+        persistent_workers=True,
+    )
+
+    # start viewer
+    model.cuda()
+    if config.enable_viewer:
+        port = model.start_viewer(mode="training", sequence=sequence, frame=time_step, port=port)
+
+    # train
+    logger = TensorBoardLogger("tb_logs/rigged_gs/static", name=config.name)
     trainer = pl.Trainer(
         logger=logger,
         max_epochs=None,
         max_steps=config.gaussian_splatting_settings.train_iterations * model.n_optimizers,
         val_check_interval=500,
         check_val_every_n_epoch=None,
+    )
+    trainer.fit(model, train_loader, val_loader)
+
+    return port
+
+
+def fine_tune_rigged_params(
+    checkpoint_path: str,
+    fine_tuning_steps: int,
+    sequence: int = CANONICAL_SEQUENCE_FRAME[0],
+    time_step: int = CANONICAL_SEQUENCE_FRAME[1],
+    port: int | None = None,
+    compile: bool = True,
+    num_train_workers: int = 12,
+    num_val_workers: int = 4,
+    enable_viewer: bool = True,
+) -> int:
+    """
+    Train loop for the static mode.
+
+    Args:
+        checkpoint_path (str): Path to the configuration file.
+        sequence (int): The sequence.
+        time_step (int): The time step.
+        overwrite (bool): Whether to overwrite the existing model.
+
+    Returns:
+        int: The port number. Useful when fine-tuning the rigging parameters.
+    """
+    # TODO: vertex adjustments as well!
+
+    # set up model
+    # model = RiggedGaussianSplatting.load_from_checkpoint(
+    #     checkpoint_path, ckpt_path=checkpoint_path, training_mode='rigged')
+    model = RiggedGaussianSplatting.load_from_checkpoint(
+        checkpoint_path, ckpt_path=checkpoint_path, training_mode='rigged')
+    gaussian_splatting_settings = model.gaussian_splatting_settings
+
+    if compile:
+        print("Compiling...", end="\t")
+        model.compile()
+        print("Done.")
+
+    torch.set_float32_matmul_precision('high')
+
+    # get datasets
+    train_set = SingleSequenceDataset(
+        cameras=TRAIN_CAMS,
+        sequence=sequence,
+        start_idx=time_step,
+        end_idx=time_step + 1,
+        n_cameras_per_frame=gaussian_splatting_settings.camera_batch_size,
+        length_multiplier=500,
+    )
+    val_set = SingleSequenceDataset(
+        cameras=TEST_CAMS,
+        sequence=sequence,
+        start_idx=time_step,
+        end_idx=time_step + 1,
+        n_cameras_per_frame=gaussian_splatting_settings.camera_batch_size,
+    )
+
+    # get loaders
+    train_loader = DataLoader(
+        train_set,
+        batch_size=None,
+        shuffle=True,
+        num_workers=num_train_workers,
+        persistent_workers=True)
+    val_loader = DataLoader(
+        val_set,
+        batch_size=None,
+        shuffle=False,
+        num_workers=num_val_workers,
+        persistent_workers=True,
+    )
+
+    # start viewer
+    model.cuda()
+    if enable_viewer:
+        port = model.start_viewer(mode="training", sequence=sequence, frame=time_step, port=port)
+
+    # train
+    logger = TensorBoardLogger(
+        "tb_logs/rigged_gs/fine_tuning", name=f'seq_{sequence}_f_{time_step}')
+    optimizers = model.configure_optimizers()  # needed to get number of optimizers
+    n_optimizers = len(optimizers)
+
+    trainer = pl.Trainer(
+        logger=logger,
+        max_epochs=None,
+        max_steps=fine_tuning_steps * n_optimizers,
+        val_check_interval=500,
+        check_val_every_n_epoch=None,
+    )
+    # clear cuda cache
+    torch.cuda.empty_cache()
+    trainer.fit(model, train_loader, val_loader)
+
+    return port
+
+
+def train_dynamic(
+    checkpoint_path: str,
+    sequence: int,
+    compile: bool = True,
+    num_train_workers: int = 12,
+    num_val_workers: int = 4,
+    enable_viewer: bool = True,
+    port: int | None = None,
+) -> int:
+    """
+    Train loop for the dynamic mode for a single sequence.
+
+    Args:
+        config_path (str): Path to the configuration file.
+
+    Returns:
+        int: The port number. Useful when fine-tuning the rigging parameters.
+    """
+    # set up model
+    model = RiggedGaussianSplatting.load_from_checkpoint(
+        checkpoint_path,
+        ckpt_path=checkpoint_path,
+        training_mode='static',  # we don't fine tune deformation fields yet
+    )
+    gaussian_splatting_settings = model.gaussian_splatting_settings
+    gaussian_splatting_settings.cap_max = 100_000  # TODO: hard coded fix
+    if compile:
+        print("Compiling...", end="\t")
+        model.compile()
+        print("Done.")
+
+    torch.set_float32_matmul_precision('high')
+
+    # sanity checks
+    params = model.splats
+    optimizers, _ = model.configure_optimizers()
+    splat_optimizers = {k: optimizers[i] for i, k in enumerate(model.splat_optimizer_keys)}
+    model.strategy.check_sanity(params, splat_optimizers)
+
+    # get datasets
+    train_set = SequentialMultiSequenceDataset(
+        sequences=TRAIN_SEQUENCES,
+        cameras=TRAIN_CAMS,
+        n_cameras_per_frame=gaussian_splatting_settings.camera_batch_size,
+    )
+    val_set = SequentialMultiSequenceDataset(
+        sequences=TRAIN_SEQUENCES,
+        cameras=TEST_CAMS,
+        n_cameras_per_frame=gaussian_splatting_settings.camera_batch_size,
+    )
+
+    # get loaders
+    train_loader = DataLoader(
+        train_set,
+        batch_size=None,
+        shuffle=False,  # lets try to learn it in order
+        num_workers=num_train_workers,
+        persistent_workers=True)
+    val_loader = DataLoader(
+        val_set,
+        batch_size=None,
+        shuffle=True,
+        num_workers=num_val_workers,
+        persistent_workers=True,
+    )
+
+    # start viewer
+    model.cuda()
+    if enable_viewer:
+        port = model.start_viewer(mode="training", sequence=sequence, frame=0, port=port)
+
+    # train
+    logger = TensorBoardLogger("tb_logs/rigged_gs/dynamic", name=f'seq_{sequence}')
+    optimizers, _ = model.configure_optimizers()  # needed to get number of optimizers
+    n_optimizers = len(optimizers)
+    trainer = pl.Trainer(
+        logger=logger,
+        max_epochs=None,
+        max_steps=n_optimizers * 100_000,  # TODO: remove hard coding!!
+        val_check_interval=250,
+        check_val_every_n_epoch=None,
+        limit_val_batches=10,
     )
     trainer.fit(model, train_loader, val_loader)
 
@@ -1677,15 +1860,32 @@ if __name__ == "__main__":
         help="Path to the configuration file.")
     parser.add_argument(
         "-v", "--visualize", type=str, help="Path to checkpoint file to visualize.")
+    parser.add_argument("-f", "--finetune", type=str, help="Path to checkpoint file to fine_tune.")
+    parser.add_argument(
+        "-td", "--train_dynamic", type=str, help="Path to checkpoint file to train_dynamic.")
     args = parser.parse_args()
+
     if args.visualize:
         model = RiggedGaussianSplatting.load_from_checkpoint(
             args.visualize, ckpt_path=args.visualize)
         model.cuda()
         print("Starting viewer...")
-        model.start_viewer(mode='rendering', sequence=100)
+        model.start_viewer(mode='rendering', sequence=79)
         print("To exit, press Ctrl+C.")
         time.sleep(100000)
+
+    elif args.finetune:
+        print("Starting fine-tuning...")
+        fine_tune_rigged_params(
+            args.finetune,
+            fine_tuning_steps=1000,
+            sequence=3,
+            time_step=0,
+        )
+
+    elif args.train_dynamic:
+        print("Starting dynamic training...")
+        train_dynamic(args.train_dynamic, sequence=3, enable_viewer=True)
 
     else:
         if args.config is not None:
