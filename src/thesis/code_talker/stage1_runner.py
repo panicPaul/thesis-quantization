@@ -79,19 +79,23 @@ class Stage1Runner(pl.LightningModule):
 
         if not self.config.use_flame_code:
             rec_loss = nn.functional.l1_loss(pred, target)
+            flame_loss = None
+            vertex_loss = None
         else:
-            flame_loss = nn.functional.l1_loss(pred, target)
+            flame_loss = nn.functional.mse_loss(pred, target)
             pred_params = flame_code_to_params(pred)
             target_params = flame_code_to_params(target)
             pred_vertices = self.flame_head.forward(pred_params)
             target_vertices = self.flame_head.forward(target_params)
             vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
             # TODO: add weights here, log both losses!
-            rec_loss = flame_loss + vertex_loss
+            rec_loss = vertex_loss
 
         # loss is VQ reconstruction + weighted pre-computed quantization loss
         quant_loss = quant_loss.mean()
-        return quant_loss*quant_loss_weight + rec_loss, [rec_loss, quant_loss]
+        return quant_loss*quant_loss_weight + rec_loss, [
+            rec_loss, quant_loss, flame_loss, vertex_loss
+        ]
 
     def training_step(self, batch, batch_idx):
         """ Training step for the model. """
@@ -124,6 +128,10 @@ class Stage1Runner(pl.LightningModule):
         self.log('train/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log('train/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
         self.log('train/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
+        if losses[2] is not None:
+            self.log('train/flame_loss', losses[2], on_step=False, on_epoch=True, prog_bar=False)
+        if losses[3] is not None:
+            self.log('train/vertex_loss', losses[3], on_step=False, on_epoch=True, prog_bar=False)
 
         # log reconstructed picture
         if self.global_step % 250 == 0:
@@ -131,7 +139,7 @@ class Stage1Runner(pl.LightningModule):
                 x = flame_code_to_params(rec)
                 x = self.flame_head.forward(x)[0][0]  # (v, 3)
             else:
-                x = rec[0][0],  # (v, 3)
+                x = rec[0][0]  # (v, 3)
             img = render_mesh_image(
                 vertex_positions=x,
                 faces=self.flame_head.faces,
@@ -173,6 +181,10 @@ class Stage1Runner(pl.LightningModule):
         self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
         self.log('val/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
+        if losses[2] is not None:
+            self.log('val/flame_loss', losses[2], on_step=False, on_epoch=True, prog_bar=False)
+        if losses[3] is not None:
+            self.log('val/vertex_loss', losses[3], on_step=False, on_epoch=True, prog_bar=False)
 
         return loss
 

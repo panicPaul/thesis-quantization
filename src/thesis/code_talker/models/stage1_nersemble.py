@@ -227,7 +227,8 @@ class VQAutoEncoder(nn.Module):
             dec = dec.view(batch_size, -1, self.n_vertices, 3)
             return dec * 1e-3
         else:
-            return dec
+            dec = dec.view(batch_size, -1, 413)
+            return dec * 1e-3
 
     def forward(
         self,

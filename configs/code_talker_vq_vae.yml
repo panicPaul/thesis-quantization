@@ -1,11 +1,11 @@
 # Config for the VQ-VAE model
-name: default_flame
+name: vertex_baseline
 
 model:
   quantization_mode: default
   disable_neck: true
   n_vertices: 5443
-  use_flame_code: true
+  use_flame_code: false
 
 
 training:
