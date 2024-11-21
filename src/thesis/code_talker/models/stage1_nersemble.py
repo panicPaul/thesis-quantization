@@ -117,6 +117,7 @@ class VQAutoEncoder(nn.Module):
     def __init__(
         self,
         n_vertices: int,
+        use_flame_code: bool,
         hidden_size: int,
         num_hidden_layers: int,
         num_attention_heads: int,
@@ -130,17 +131,16 @@ class VQAutoEncoder(nn.Module):
         is_audio=False,
         quantization_mode: Literal['default', 'fsq', 'bottleneck'] = 'default',
         disable_neck: bool = False,
-        use_flame_code: bool = False,
     ):
         super().__init__()
         self.disable_neck = disable_neck
         self.code_dim = code_dim
         self.face_quan_num = face_quan_num
-        self.input_dim = n_vertices * 3
         self.n_vertices = n_vertices
         self.use_flame_code = use_flame_code
         # 300 shape, 100 expr, 3 neck, 3 jaw, 6 eye, 1 scale
-        input_dim = n_vertices * 3 if use_flame_code else 413
+        input_dim = n_vertices * 3 if not use_flame_code else 413
+        self.input_dim = input_dim
         self.encoder = TransformerEncoder(
             input_dim=input_dim,
             hidden_size=hidden_size,
@@ -244,9 +244,9 @@ class VQAutoEncoder(nn.Module):
         """
         Args:
             x (torch.Tensor): input tensor of shape (batch, time, c_in) where c_in is the flattened
-                vertex coordinates, i.e. V*3
+                vertex coordinates, i.e. V*3 or flame_dim
             template (torch.Tensor): template tensor of shape (batch, c_in) where c_in is the
-                flattened vertex coordinates, i.e. V*3
+                flattened vertex coordinates, i.e. V*3 or flame_dim
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, tuple]: tuple containing:

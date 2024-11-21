@@ -9,6 +9,8 @@ from thesis.code_talker.models.utils import (
     init_biased_mask,
 )
 from thesis.code_talker.stage1_runner import Stage1Runner
+from thesis.code_talker.utils import flame_code_to_params
+from thesis.data_management import UnbatchedFlameParams
 
 
 class CodeTalker(nn.Module):
@@ -47,6 +49,7 @@ class CodeTalker(nn.Module):
         for param in self.autoencoder.parameters():
             param.requires_grad = False
         self.disable_neck = stage_1_runner.config.disable_neck
+        self.use_flame_code = stage_1_runner.config.use_flame_code
 
         # audio map
         self.audio_feature_map = nn.Linear(1024, feature_dim)
@@ -79,8 +82,10 @@ class CodeTalker(nn.Module):
     def forward(
         self,
         audio_features: Float[torch.Tensor, 'batch time audio_feature_dim'],
-        template: Float[torch.Tensor, 'batch n_vertices 3'],
-        vertices: Float[torch.Tensor, 'batch time n_vertices 3'],
+        template: Float[torch.Tensor, 'batch n_vertices 3']
+        | Float[torch.Tensor, 'batch flame_dim'],
+        gt: Float[torch.Tensor, 'batch time n_vertices 3']
+        | Float[torch.Tensor, 'batch time flame_dim'],
     ) -> tuple[
             Float[torch.Tensor, ""],
             Float[torch.Tensor, ""],
@@ -90,7 +95,8 @@ class CodeTalker(nn.Module):
         Args:
             audio_features (torch.Tensor): audio features of shape (batch, time, audio_feature_dim)
             template (torch.Tensor): template vertices of shape (batch, n_vertices, 3)
-            vertices (torch.Tensor): ground truth vertices of shape (batch, time, n_vertices, 3)
+            gt (torch.Tensor): ground truth vertices of shape (batch, time, n_vertices, 3) or the
+                gt flame parameters of shape (batch, time, flame_dim)
 
         Returns:
             tuple: A tuple containing the loss, motion loss, and regularization loss.
@@ -105,11 +111,11 @@ class CodeTalker(nn.Module):
 
         # gt motion feature extraction
         # feat_q_gt, _ = self.autoencoder.get_quant(vertices - template)
-        feat_q_gt, _, _ = self.autoencoder.encode(vertices - template)
+        feat_q_gt, _, _ = self.autoencoder.encode(gt - template)
         feat_q_gt = feat_q_gt.permute(0, 2, 1)
 
         # auto-regressive facial motion prediction with teacher-forcing
-        vertices_input = torch.cat((template, vertices[:, :-1]), 1)  # shift one position
+        vertices_input = torch.cat((template, gt[:, :-1]), 1)  # shift one position
         vertices_input = vertices_input - template  # (batch, seq_len, v, 3)
         vertices_input = vertices_input.reshape(batch_size, time, -1)  # (batch, seq_len, V*3)
         vertices_input = self.vertices_map(vertices_input)
@@ -132,7 +138,7 @@ class CodeTalker(nn.Module):
         vertices_out = vertices_out + template  # (batch, seq_len, v, 3)
 
         # loss
-        loss_motion = nn.functional.mse_loss(vertices_out, vertices)  # (batch, seq_len, v, 3)
+        loss_motion = nn.functional.mse_loss(vertices_out, gt)  # (batch, seq_len, v, 3)
         # loss_motion = nn.functional.l1_loss(vertices_out, vertices)
         loss_reg = nn.functional.mse_loss(feat_out, feat_q_gt.detach())
 
@@ -142,15 +148,17 @@ class CodeTalker(nn.Module):
     def predict(
         self,
         audio_features: Float[torch.Tensor, 'time audio_feature_dim'],
-        template: Float[torch.Tensor, '1 n_vertices 3'],
-    ) -> Float[torch.Tensor, 'time n_vertices 3']:
+        template: Float[torch.Tensor, '1 n_vertices 3'] | Float[torch.Tensor, '1 flame_dim'],
+    ) -> Float[torch.Tensor, 'time n_vertices 3'] | UnbatchedFlameParams:
         """
         Args:
             audio_features (torch.Tensor): audio features of shape (time, audio_feature_dim)
-            template (torch.Tensor): template vertices of shape (1, n_vertices, 3)
+            template (torch.Tensor): template vertices of shape (1, n_vertices, 3) or the template
+                flame parameters of shape (1, flame_dim)
 
         Returns:
-            torch.Tensor: predicted vertices of shape (time, n_vertices, 3)
+            torch.Tensor: predicted vertices of shape (time, n_vertices, 3) or the predicted flame
+                parameters of shape (time, flame_dim)
         """
         audio_features = audio_features.unsqueeze(0)  # (1, time, audio_feature_dim)
         template = template.unsqueeze(1)  # (1,1,v,3)
@@ -205,5 +213,9 @@ class CodeTalker(nn.Module):
         vertices_out = self.autoencoder.decode(feat_out_q)
 
         vertices_out = vertices_out + template
-        vertices_out = vertices_out.squeeze(0).reshape(frame_num, -1, 3)  # TODO: double check
+        if self.use_flame_code:
+            vertices_out = vertices_out.squeeze(0).reshape(frame_num, -1)
+            vertices_out = flame_code_to_params(vertices_out)
+        else:
+            vertices_out = vertices_out.squeeze(0).reshape(frame_num, -1, 3)
         return vertices_out

@@ -1,10 +1,12 @@
 # Config for the VQ-VAE model
-name: without_neck_fsq
+name: default_flame
 
 model:
-  quantization_mode: fsq
+  quantization_mode: default
   disable_neck: true
   n_vertices: 5443
+  use_flame_code: true
+
 
 training:
   epochs: 200

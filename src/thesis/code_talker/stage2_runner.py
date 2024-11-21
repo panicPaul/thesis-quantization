@@ -13,6 +13,7 @@ from thesis.code_talker.models.code_talker_config import (
     CodeTalkerTrainingConfig,
 )
 from thesis.code_talker.models.stage2 import CodeTalker
+from thesis.code_talker.utils import flame_params_to_code
 from thesis.constants import CANONICAL_FLAME_PARAMS, TEST_SEQUENCES, TRAIN_SEQUENCES
 from thesis.data_management import (
     FlameParams,
@@ -45,10 +46,20 @@ class Stage2Runner(pl.LightningModule):
             self.flame_head = FlameHead()
         self.config = config
         self.training_config = training_config
+
         canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
-        canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)
-        canonical_flame_vertices = canonical_flame_vertices
+        if self.model.disable_neck:
+            canonical_flame_params = UnbatchedFlameParams(
+                shape=canonical_flame_params.shape,
+                expr=canonical_flame_params.expr,
+                neck=torch.zeros_like(canonical_flame_params.neck),
+                jaw=canonical_flame_params.jaw,
+                eye=canonical_flame_params.eye,
+                scale=canonical_flame_params.scale,
+            )
+        canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)  # (1, v, 3)
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
+        self.register_buffer("canonical_flame_code", flame_params_to_code(canonical_flame_params))
 
     def configure_optimizers(self):
         """ Configures the optimizers and schedulers. """
@@ -76,15 +87,21 @@ class Stage2Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-        batch_size, _, _, _ = flame_vertices.shape
-        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)
+
+        if self.model.use_flame_code:
+            x = flame_params_to_code(flame_params)
+            batch_size = x.shape[0]
+            template = self.canonical_flame_code.repeat(batch_size, 1)
+        else:
+            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+            batch_size = x.shape[0]
+            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
 
         # forward pass
         loss, motion_loss, reg_loss = self.model.forward(
             audio_features=audio_features,
             template=template,
-            vertices=flame_vertices,
+            gt=x,
         )
 
         # logging
@@ -108,15 +125,21 @@ class Stage2Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-        batch_size, _, _, _ = flame_vertices.shape
-        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)
+
+        if self.model.use_flame_code:
+            x = flame_params_to_code(flame_params)
+            batch_size = x.shape[0]
+            template = self.canonical_flame_code.repeat(batch_size, 1)
+        else:
+            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+            batch_size = x.shape[0]
+            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
 
         # forward pass
         loss, motion_loss, reg_loss = self.model.forward(
             audio_features=audio_features,
             template=template,
-            vertices=flame_vertices,
+            gt=x,
         )
 
         # logging
@@ -127,7 +150,10 @@ class Stage2Runner(pl.LightningModule):
     def predict(self, audio_features):
         """ Predicts the flame vertices from the audio features and template. """
         self.eval()
-        template = self.canonical_flame_vertices
+        if self.model.use_flame_code:
+            template = self.canonical_flame_code
+        else:
+            template = self.canonical_flame_vertices
         return self.model.predict(audio_features, template)
 
 

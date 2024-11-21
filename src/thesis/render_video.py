@@ -444,7 +444,7 @@ def main(
         "Either provide a checkpoint for audio-to-flame prediction or a sequence number to load " \
         "ground truth flame parameters."
     name = f'sequence_{sequence}' if flame_params_sequence is not None else audio_path.split(
-        '/')[-1]
+        '/')[-3]
     output_dir = f'{output_dir}/{splats.name}/{mode}'
     if smoothing_mode != 'none':
         output_dir = f'{output_dir}/{smoothing_mode}'
@@ -515,13 +515,15 @@ def main(
 if __name__ == '__main__':
     # Arguments
     mode: Literal['flame', 'audio'
-                  'gt'] = 'flame'
-    sequence: int | None = 100
+                  'gt'] = 'audio'
+    sequence: int | None = 3
     audio_path: str | None = None
     gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_noisy_audio/version_0/checkpoints/epoch=2-step=240000.ckpt'  # noqa
-    audio_to_flame_checkpoint: str | None = None
+    # audio_to_flame_checkpoint: str | None = None
+    audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/prediction_flame_default/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
     quicktime_compatible: bool = False
     smoothing_mode: Literal['none', 'gaussian', 'moving_average', 'savgol', 'exponential'] = 'none'
+    background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 0.8
 
     # Parse overridable arguments
     parser = argparse.ArgumentParser()
@@ -577,6 +579,7 @@ if __name__ == '__main__':
                 se_3_sequence=se_3_sequence,
                 quicktime_compatible=quicktime_compatible,
                 smoothing_method=smoothing_mode,
+                background_color=background_color,
             )
 
         case 'audio':
@@ -589,4 +592,5 @@ if __name__ == '__main__':
                 se_3_sequence=se_3_sequence,
                 quicktime_compatible=quicktime_compatible,
                 smoothing_method=smoothing_mode,
+                background_color=background_color,
             )
