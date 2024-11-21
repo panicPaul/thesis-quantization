@@ -1,35 +1,45 @@
 
-name: dynamic_gaussian_splatting
+name: 2dgs_full_res_500k_noisy_audio
+# port 46551
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
 
   # pre-processing settings
   use_view_dependent_color_mlp: true
-  rasterization_mode: 3dgs
+  rasterization_mode: 2dgs
   prior_window_size: 21 # two thirds of a second
   per_gaussian_motion_adjustment: true
   per_gaussian_motion_adjustment_use_audio: true
   per_gaussian_motion_adjustment_use_flame: true
+  learnable_shader: true
 
   # rasterization_settings
   sh_degree: 3
+  radius_clip: 0.3
+
 
   # post-processing settings
   background_r: 0.66
   background_g: 0.66
   background_b: 0.66
   screen_space_denoising_mode: none
-  learnable_color_correction: false
+  learnable_color_correction: true
+
 
   # densification_settings
   densification_mode: monte_carlo_markov_chain
   # densification_mode: default
   refine_start_iteration: 250
-  refine_stop_iteration: 2_000
-  train_iterations: 2_500
-  cap_max: 100_000
+#   refine_stop_iteration: 90_000
+#   train_iterations: 100_000
+#   lpips_start_iteration: 35_000
+  refine_stop_iteration: 25_000
+  train_iterations: 30_000
+  lpips_start_iteration: 10_000
+  cap_max: 500_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
+  image_downsampling_factor: 1.0
 
 
   # initialization settings
@@ -44,8 +54,8 @@ gaussian_splatting_settings:
   # ssim_image_loss: 0.1
   ssim_image_loss: 0.2
   ssim_denoised_image_loss: null
-  # lpips_image_loss: 0.05
-  lpips_image_loss: null
+  lpips_image_loss: 0.003 #0.001 #0.05 is causing significant artifacts # 1e-3 seems too small tho
+  # lpips_image_loss: null
   anisotropy_loss: 0.1
   max_scale_loss: null
   local_rigidity_loss: null
@@ -72,7 +82,8 @@ gaussian_splatting_settings:
   feature_dim: 32
   camera_batch_size: 1 # anything more than 2 is going to be out of memory
   log_images_interval: 250
-  shuffle_train_data: true
+  shuffle_train_data: true # keep at true, trade-off not worth it
+#   image_downsampling_factor: 2.0
 
 # ---> Learning Rates
 learning_rates:
@@ -88,8 +99,13 @@ learning_rates:
   # Color MLP
   color_mlp_lr: 1e-3
   color_mlp_weight_decay: 1e-6
+  # shader
+  learnable_shader_lr: 1e-3
   # deformation
   per_gaussian_deformations_lr: 1e-3
+
+  # color correction
+  color_correction_lr: 1e-5
 
 
   # --> pre_processing

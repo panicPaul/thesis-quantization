@@ -40,7 +40,6 @@ class SequenceManager:
         data_dir: str = DATA_DIR_NERSEMBLE,
         image_downsampling_factor: int | float = 1,
         cameras: list[int] = TRAIN_CAMS,
-        cleaned_audio: bool = True,
     ) -> None:
         """
         Args:
@@ -101,7 +100,7 @@ class SequenceManager:
             data_dir,
             image_downsampling_factor,
             cameras,
-            cleaned=cleaned_audio,
+            cleaned=False,  # DO NOT CHANGE!
         )
 
     def __len__(self) -> int:

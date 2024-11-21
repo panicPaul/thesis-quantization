@@ -130,6 +130,7 @@ class VQAutoEncoder(nn.Module):
         is_audio=False,
         quantization_mode: Literal['default', 'fsq', 'bottleneck'] = 'default',
         disable_neck: bool = False,
+        use_flame_code: bool = False,
     ):
         super().__init__()
         self.disable_neck = disable_neck
@@ -137,9 +138,11 @@ class VQAutoEncoder(nn.Module):
         self.face_quan_num = face_quan_num
         self.input_dim = n_vertices * 3
         self.n_vertices = n_vertices
-
+        self.use_flame_code = use_flame_code
+        # 300 shape, 100 expr, 3 neck, 3 jaw, 6 eye, 1 scale
+        input_dim = n_vertices * 3 if use_flame_code else 413
         self.encoder = TransformerEncoder(
-            input_dim=n_vertices * 3,
+            input_dim=input_dim,
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
@@ -156,7 +159,7 @@ class VQAutoEncoder(nn.Module):
             relu_negative_slope=relu_negative_slope,
             quant_factor=quant_factor,
             instance_normalization_affine=instance_normalization_affine,
-            out_dim=n_vertices * 3,
+            out_dim=input_dim,
             is_audio=is_audio,
         )
         self.face_quan_num = face_quan_num  # h in the paper
@@ -172,6 +175,7 @@ class VQAutoEncoder(nn.Module):
 
     def encode(
         self, x: Float[torch.Tensor, "batch time n_vertices 3"]
+        | Float[torch.Tensor, "batch time flame_dim"]
     ) -> tuple[
             Float[torch.Tensor, "batch code_dim th"],
             Float[torch.Tensor, ""],
@@ -188,8 +192,11 @@ class VQAutoEncoder(nn.Module):
                 - emb_loss (torch.Tensor): embedding loss
                 - info (tuple): additional information
         """
-        batch_size, time, n_vertices, _ = x.shape
-        x = x.view(batch_size, time, -1)
+        if not self.use_flame_code:
+            batch_size, time, n_vertices, _ = x.shape
+            x = x.view(batch_size, time, -1)
+        else:
+            batch_size, time, _ = x.shape
         h = self.encoder(x)  # x --> z'
         h = h.view(batch_size, time, self.face_quan_num, self.code_dim)  # (b, t, h, c)
         h = h.view(batch_size, time * self.face_quan_num, self.code_dim)  # (b, t*h, c)
@@ -199,7 +206,8 @@ class VQAutoEncoder(nn.Module):
     def decode(
         self,
         quant: Float[torch.Tensor, "batch code_dim th"],
-    ) -> Float[torch.Tensor, "batch time n_vertices 3"]:
+    ) -> Float[torch.Tensor, "batch time n_vertices 3"] | Float[torch.Tensor,
+                                                                "batch time flame_dim"]:
         """
         Args:
             quant (torch.Tensor): quantized representation of the input tensor.
@@ -215,15 +223,21 @@ class VQAutoEncoder(nn.Module):
         quant = quant.view(batch_size, -1, self.face_quan_num * self.code_dim).contiguous()
         quant = quant.permute(0, 2, 1).contiguous()
         dec = self.decoder(quant)  # z' --> x
-        dec = dec.view(batch_size, -1, self.n_vertices, 3)
-        return dec * 1e-3
+        if not self.use_flame_code:
+            dec = dec.view(batch_size, -1, self.n_vertices, 3)
+            return dec * 1e-3
+        else:
+            return dec
 
     def forward(
         self,
-        x: Float[torch.Tensor, "batch time n_vertices 3"],
-        template: Float[torch.Tensor, "batch n_vertices 3"],
+        x: Float[torch.Tensor, "batch time n_vertices 3"]
+        | Float[torch.Tensor, "batch time flame_dim"],
+        template: Float[torch.Tensor, "batch n_vertices 3"]
+        | Float[torch.Tensor, "batch flame_dim"],
     ) -> tuple[
-            Float[torch.Tensor, "batch time n_vertices 3"],
+            Float[torch.Tensor, "batch time n_vertices 3"] | Float[torch.Tensor,
+                                                                   "batch time flame_dim"],
             Float[torch.Tensor, ""],
             tuple,
     ]:
@@ -241,11 +255,11 @@ class VQAutoEncoder(nn.Module):
                 - emb_loss (torch.Tensor): embedding loss
                 - info (tuple): additional information
         """
-        template = template.unsqueeze(1)  # (b, 1, v, 3)
-        x = x - template  # (b, t, v, 3)
+        template = template.unsqueeze(1)  # (b, 1, v, 3) or (b, 1, f)
+        x = x - template  # (b, t, v, 3) or (b, t, f)
 
         quant, emb_loss, info = self.encode(x)  # (b, c, t*h)
-        dec = self.decode(quant)  # (b, t, v, 3)
+        dec = self.decode(quant)  # (b, t, v, 3) or
 
         dec = dec + template
         return dec, emb_loss, info
@@ -464,4 +478,5 @@ class TransformerDecoder(nn.Module):
 
         decoder_features = self.decoder_transformer((decoder_features, dummy_mask))
         pred_recon = self.vertices_map_reverse(decoder_features)
+        return pred_recon
         return pred_recon

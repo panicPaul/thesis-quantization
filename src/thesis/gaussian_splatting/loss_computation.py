@@ -110,7 +110,8 @@ class LossComputer(nn.Module):
             loss_dict["background_loss"] = background_loss
             loss = loss + background_loss * self.gaussian_splatting_settings.background_loss
         # aniostropy loss
-        if self.gaussian_splatting_settings.anisotropy_loss is not None:
+        if self.gaussian_splatting_settings.anisotropy_loss is not None and \
+           self.gaussian_splatting_settings.rasterization_mode == '3dgs':  # disable for 2dgs
 
             @torch.compiler.disable
             def f():

@@ -101,6 +101,7 @@ class DynamicGaussianSplattingSettings:
     per_gaussian_motion_adjustment: bool = True
     per_gaussian_motion_adjustment_use_audio: bool = False
     per_gaussian_motion_adjustment_use_flame: bool = False
+    learnable_shader: bool = False
 
     # rasterization_settings
     sh_degree: int = 3
@@ -170,6 +171,7 @@ class DynamicGaussianSplattingSettings:
     log_images_interval: int = 500
     shuffle_train_data: bool = True
     lpips_start_iteration: int = 10_000  # don't start lpips loss until this iteration
+    image_downsampling_factor: float = 1.0
 
 
 def load_config(path: str, mode: Literal['default', 'dynamic']) -> DictConfig:

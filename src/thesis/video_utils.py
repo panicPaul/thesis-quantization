@@ -57,11 +57,13 @@ def add_audio(
         else:
             inferred_sample_rate = sr
             audio_duration = len(audio_array) / sr
-            assert audio_duration >= video_duration, "Audio is shorter than video"
+            assert audio_duration >= video_duration, \
+                f"Audio is shorter than video, audio length: {audio_duration}, " \
+                f"video length: {video_duration}"
             trim_length = int(video_duration * sr)
-            left_trim = (len(audio_array) - trim_length) // 2
-            right_trim = len(audio_array) - left_trim
-            audio_array = audio_array[left_trim:right_trim]
+            left_trim_point = (len(audio_array) - trim_length) // 2
+            right_trim_point = len(audio_array) - left_trim_point
+            audio_array = audio_array[left_trim_point:right_trim_point]
 
         # Write the audio to the temporary file
         sf.write(temp_audio_path, audio_array, inferred_sample_rate)

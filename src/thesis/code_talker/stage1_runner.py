@@ -16,6 +16,7 @@ from thesis.code_talker.models.code_talker_config import (
     QuantizerConfig,
 )
 from thesis.code_talker.models.stage1_nersemble import VQAutoEncoder
+from thesis.code_talker.utils import flame_code_to_params, flame_params_to_code
 from thesis.constants import CANONICAL_FLAME_PARAMS, TEST_SEQUENCES, TRAIN_SEQUENCES
 from thesis.data_management import (
     FlameParams,
@@ -74,7 +75,19 @@ class Stage1Runner(pl.LightningModule):
     # TODO: experiment with predicting flame vertices directly
     def calc_vq_loss(self, pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
         """ function that computes the various components of the VQ loss """
-        rec_loss = nn.functional.l1_loss(pred, target)
+
+        if not self.config.use_flame_code:
+            rec_loss = nn.functional.l1_loss(pred, target)
+        else:
+            flame_loss = nn.functional.l1_loss(pred, target)
+            pred_params = flame_code_to_params(pred)
+            target_params = flame_code_to_params(target)
+            pred_vertices = self.flame_head.forward(pred_params)
+            target_vertices = self.flame_head.forward(target_params)
+            vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
+            # TODO: add weights here, log both losses!
+            rec_loss = flame_loss + vertex_loss
+
         # loss is VQ reconstruction + weighted pre-computed quantization loss
         quant_loss = quant_loss.mean()
         return quant_loss*quant_loss_weight + rec_loss, [rec_loss, quant_loss]

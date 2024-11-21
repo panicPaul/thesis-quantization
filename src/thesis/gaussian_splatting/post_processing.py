@@ -86,17 +86,6 @@ class PostProcessor(nn.Module):
                 - (*dict*): Infos, a dictionary containing additional information.
         """
 
-        # Apply background
-        image_height, image_width = render_images.shape[1:3]
-        background = repeat(
-            background,
-            "f -> cam H W f",
-            cam=render_images.shape[0],
-            H=image_height,
-            W=image_width,
-        )
-        render_images = render_images*render_alphas + (1-render_alphas) * background
-
         # Apply color correction
         if (color_correction is not None and
                 self.gaussian_splatting_settings.camera_color_correction):
@@ -124,12 +113,22 @@ class PostProcessor(nn.Module):
         if hasattr(self, "learnable_color_correction") and camera_indices is not None:
             render_images = self.learnable_color_correction.forward(camera_indices, render_images)
 
-        # Add images to the infos
+        # Apply background
+        image_height, image_width = render_images.shape[1:3]
+        background = repeat(
+            background,
+            "f -> cam H W f",
+            cam=render_images.shape[0],
+            H=image_height,
+            W=image_width,
+        )
+        render_images = render_images*render_alphas + (1-render_alphas) * background
         infos['raw_rendered_images'] = render_images
         infos['raw_rendered_alphas'] = render_alphas
 
         # Apply screen-space denoising
         if hasattr(self, "screen_space_denoiser"):
+
             raise NotImplementedError("Screen space denoiser not ported over.")
             render_images = self.screen_space_denoiser.forward(render_images, render_alphas)
 

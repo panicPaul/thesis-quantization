@@ -22,7 +22,10 @@ from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
 from thesis.flame import FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.per_gaussian_deformation import PerGaussianDeformations
-from thesis.gaussian_splatting.view_dependent_coloring import ViewDependentColorMLP
+from thesis.gaussian_splatting.view_dependent_coloring import (
+    LearnableShader,
+    ViewDependentColorMLP,
+)
 from thesis.utils import (
     apply_se3_to_orientation,
     apply_se3_to_point,
@@ -83,6 +86,10 @@ class RiggedPreProcessor(nn.Module):
                 per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
             )
 
+        if gaussian_splatting_settings.learnable_shader:
+            self.learnable_shader = LearnableShader(
+                feature_dim=gaussian_splatting_settings.feature_dim)
+
     @property
     def canonical_flame_params(self) -> UnbatchedFlameParams:
         """ Returns the canonical flame parameters. """
@@ -115,6 +122,12 @@ class RiggedPreProcessor(nn.Module):
             params.append({
                 "params": self.per_gaussian_deformations.parameters(),
                 'lr': self.learning_rates.per_gaussian_deformations_lr * batch_scaling,
+                'weight_decay': 1e-2,  # standard weight decay
+            })
+        if hasattr(self, "learnable_shader"):
+            params.append({
+                "params": self.learnable_shader.parameters(),
+                'lr': self.learning_rates.learnable_shader_lr * batch_scaling,
                 'weight_decay': 1e-2,  # standard weight decay
             })
         return AdamW(params)
@@ -245,5 +258,14 @@ class RiggedPreProcessor(nn.Module):
             colors = colors = torch.cat([splats["sh0"], splats["shN"]], 1)
         scales = torch.exp(splats["scales"])
         opacities = torch.sigmoid(splats["opacities"])
+
+        # ---> Shading
+        if hasattr(self, "learnable_shader"):
+            colors = self.learnable_shader.forward(
+                spatial_position=means,
+                orientation=quats,
+                features=features,
+                colors=colors,
+            )
 
         return means, quats, scales, opacities, colors, infos

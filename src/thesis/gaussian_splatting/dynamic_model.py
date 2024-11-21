@@ -59,6 +59,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
 
     def __init__(
         self,
+        name: str,
         gaussian_splatting_settings: DynamicGaussianSplattingSettings | DictConfig,
         learning_rates: DictConfig,
         enable_viewer: bool = True,
@@ -80,6 +81,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         """
         super().__init__()
         self.save_hyperparameters()
+        self.name = name
         self.automatic_optimization = False
 
         # Save the settings
@@ -304,16 +306,17 @@ class DynamicGaussianSplatting(pl.LightningModule):
             other_optimizers = [pre_processor_optimizer, post_processor_optimizer]
         else:
             other_optimizers = [pre_processor_optimizer]
+        optimizer_list = list(splat_optimizers.values()) + other_optimizers
+        self.n_optimizers = len(optimizer_list)
 
         # ---> schedulers
         schedulers = {}
         schedulers["means"] = torch.optim.lr_scheduler.ExponentialLR(
             splat_optimizers["means"],
-            gamma=0.01**(1.0 / self.gaussian_splatting_settings.train_iterations))
-        optimizer_list = list(splat_optimizers.values()) + other_optimizers
+            gamma=0.01**(1.0 /
+                         (self.gaussian_splatting_settings.train_iterations * self.n_optimizers)))
         self.splat_optimizer_keys = list(splat_optimizers.keys())
         scheduler_list = list(schedulers.values())
-        self.n_optimizers = len(optimizer_list)
 
         return optimizer_list, scheduler_list
 
@@ -335,6 +338,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
         background: Float[torch.Tensor, "3"] | None = None,
+        _means_override: Float[torch.Tensor, "n_splats 3"] | None = None,
     ) -> tuple[
             Float[torch.Tensor, "cam H W 3"],
             Float[torch.Tensor, "cam H W 1"],
@@ -357,6 +361,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
             flame_params (UnbatchedFlameParams): Flame parameters.
             audio_features (torch.Tensor): Audio features. Shape: `(window_size, 1024)`.
             background (torch.Tensor): Background.
+            _means_override (torch.Tensor): Means override. This is used when we want to smooth
+                the trajectories of the splats.
 
         Returns:
             tuple: A tuple containing
@@ -404,6 +410,9 @@ class DynamicGaussianSplatting(pl.LightningModule):
             audio_features=audio_features,
             infos=infos,
         )
+
+        if _means_override is not None:  # used for trajectory smoothing
+            means = _means_override.cuda()
 
         # rasterization
         ret = self.rasterize(
@@ -802,6 +811,114 @@ class DynamicGaussianSplatting(pl.LightningModule):
     #                                  Video rendering                                 #
     # ================================================================================ #
 
+    @torch.no_grad()
+    def compute_3d_trajectories(
+        self,
+        se_transforms: UnbatchedSE3Transform,
+        rigging_params: Float[torch.Tensor, 'time n_vertices 3'],
+        world_2_cam: Float[torch.Tensor, 'time 4 4'] | None = None,
+        cam_2_world: Float[torch.Tensor, 'time 4 4'] | None = None,
+        flame_params: UnbatchedFlameParams | None = None,
+        audio_features: Float[torch.Tensor, 'time 1024'] | None = None,
+        background: Float[torch.Tensor, '3'] | None = None,
+    ) -> Float[torch.Tensor, 'time n_splats 3']:
+        """
+        Computes the 3D trajectories for each splat.
+
+        Args:
+            se_transforms (UnbatchedSE3Transform): The SE3 transforms.
+            rigging_params (torch.Tensor): The rigging parameters, shape: `(time, n_vertices, 3)`.
+            world_2_cam (torch.Tensor): The world to camera matrices, shape: `(time, 4, 4)`.
+            cam_2_world (torch.Tensor): The camera to world matrices, shape: `(time, 4, 4)`.
+            flame_params (UnbatchedFlameParams): The flame parameters. Should have the same length
+                as the se_transforms + window_size - 1.
+            audio_features (torch.Tensor): The audio features, shape: `(time , 1024)`. Note that
+                the audio features should have the same length as the
+                se_transforms + window_size - 1.
+            background (torch.Tensor): The background.
+        """
+
+        n_splats = self.splats['means'].shape[0]
+        window_size = self.gaussian_splatting_settings.prior_window_size
+        n_frames = len(se_transforms.rotation)
+        trajectories = torch.zeros(n_frames - window_size + 1, n_splats, 3).cuda()
+
+        for t in tqdm(
+                range(window_size // 2, n_frames - window_size//2), desc="Computing trajectories"):
+
+            # get current parameters
+            if world_2_cam is not None:
+                cur_world_2_cam = world_2_cam[t:t + 1]
+                cur_cam_2_world = None
+            else:
+                cur_world_2_cam = None
+                cur_cam_2_world = cam_2_world[t:t + 1]
+            cur_se_transform = UnbatchedSE3Transform(
+                rotation=se_transforms.rotation[t:t + 1],
+                translation=se_transforms.translation[t:t + 1],
+            )
+            rigging_params_t = rigging_params[t]
+
+            if flame_params is not None:
+                flame_params_t = UnbatchedFlameParams(
+                    shape=flame_params.shape[t - window_size//2:t + window_size//2 + 1],
+                    expr=flame_params.expr[t - window_size//2:t + window_size//2 + 1],
+                    neck=flame_params.neck[t - window_size//2:t + window_size//2 + 1],
+                    jaw=flame_params.jaw[t - window_size//2:t + window_size//2 + 1],
+                    eye=flame_params.eye[t - window_size//2:t + window_size//2 + 1],
+                    scale=flame_params.scale[t - window_size//2:t + window_size//2 + 1],
+                )
+            else:
+                flame_params_t = None
+
+            if audio_features is not None:
+                audio_features_t = audio_features[t - window_size//2:t + window_size//2 + 1]
+            else:
+                audio_features_t = None
+
+            # set up transformation matrices
+            assert (cur_cam_2_world is None) != (cur_world_2_cam is None), \
+                "Either `cur_cam_2_world` or `cur_world_2_cam` must be provided."
+            if cur_cam_2_world is None:
+                cur_cam_2_world = torch.zeros_like(cur_world_2_cam)
+                cur_cam_2_world[..., :3, :3] = cur_world_2_cam[..., :3, :3].transpose(-2, -1)
+                cur_cam_2_world[..., :3, 3] = -torch.bmm(
+                    cur_world_2_cam[..., :3, :3].transpose(-2, -1),
+                    cur_world_2_cam[..., :3, 3].unsqueeze(-1),
+                ).squeeze(-1)
+                cur_cam_2_world[..., 3, 3] = 1
+            else:
+                cur_world_2_cam = torch.zeros_like(cur_cam_2_world)
+                cur_world_2_cam[..., :3, :3] = cur_cam_2_world[..., :3, :3].transpose(-2, -1)
+                cur_world_2_cam[..., :3, 3] = -torch.bmm(
+                    cur_cam_2_world[..., :3, :3].transpose(-2, -1),
+                    cur_cam_2_world[..., :3, 3].unsqueeze(-1),
+                ).squeeze(-1)
+                cur_world_2_cam[..., 3, 3] = 1
+
+            # background
+            if background is None:
+                background = self.default_background
+
+            # pre-processing
+            infos = {}
+            means, _, _, _, _, _ = self.pre_processor.forward(
+                splats=self.splats,
+                se3_transform=cur_se_transform,
+                rigging_params=rigging_params_t,
+                cam_2_world=cur_cam_2_world,
+                world_2_cam=cur_world_2_cam,
+                camera_indices=None,
+                cur_sh_degree=None,
+                flame_params=flame_params_t,
+                audio_features=audio_features_t,
+                infos=infos,
+            )
+            trajectories[t - window_size//2] = means
+
+        return trajectories
+
+    @torch.no_grad()
     def render_video(
         self,
         intrinsics: Float[torch.Tensor, 'time 3 3'],
@@ -814,6 +931,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, 'time 1024'] | None = None,
         background: Float[torch.Tensor, '3'] | None = None,
+        trajectories: Float[torch.Tensor, 'time n_splats 3'] | None = None,
     ) -> UInt8[np.ndarray, 'time H W 3']:
         """
         Renders a video.
@@ -831,23 +949,30 @@ class DynamicGaussianSplatting(pl.LightningModule):
             audio_features (torch.Tensor): The audio features, shape: `(time , 1024)`. Note that
                 the audio features should have the same length as the intrinsics + window_size - 1.
             background (torch.Tensor): The background.
+            trajectories (torch.Tensor): Pre-computed trajectories. This is useful if we want to
+                smooth the trajectories of the splats.
 
         Returns:
             np.ndarray: The video.
         """
         self.eval()
         self.cuda()
-        video = torch.zeros((len(intrinsics), image_height, image_width, 3), device='cuda')
+        video = []
 
         window_size = self.gaussian_splatting_settings.prior_window_size
-        if audio_features is not None:
-            assert audio_features.shape[0] == len(intrinsics) + window_size - 1, \
-                "Audio features should have the same length as the intrinsics + window_size - 1"
+        n_frames = len(intrinsics)
+        assert se_transforms.rotation.shape[0] == n_frames
+        assert rigging_params.shape[0] == n_frames
+        if world_2_cam is not None and world_2_cam.ndim == 3:
+            assert world_2_cam.shape[0] == n_frames
+        if cam_2_world is not None and cam_2_world.ndim == 3:
+            assert cam_2_world.shape[0] == n_frames
         if flame_params is not None:
-            assert flame_params.shape[0] == len(intrinsics) + window_size - 1, \
-                "Flame params should have the same length as the intrinsics + window_size - 1"
+            assert flame_params.expr.shape[0] == n_frames
+        if audio_features is not None:
+            assert audio_features.shape[0] == n_frames
 
-        for t in tqdm(range(len(intrinsics)), desc="Rendering video"):
+        for t in tqdm(range(window_size // 2, n_frames - window_size//2), desc="Rendering video"):
             cur_intrinsics = intrinsics[t:t + 1]
             if world_2_cam is not None:
                 cur_world_2_cam = world_2_cam[t:t + 1]
@@ -878,25 +1003,36 @@ class DynamicGaussianSplatting(pl.LightningModule):
             else:
                 audio_features_t = None
 
+            if trajectories is not None:
+                try:
+                    cur_mean_positions = trajectories[t - window_size//2]
+                except IndexError:
+                    print(f'dropping frame {t - window_size//2} due to trajectory mismatch')
+                    cur_mean_positions = None
+            else:
+                cur_mean_positions = None
+
             rendered_images, _, _, _ = self.forward(
-                intrinsics=cur_intrinsics,
-                world_2_cam=cur_world_2_cam,
-                cam_2_world=cur_cam_2_world,
-                image_height=image_height,
-                image_width=image_width,
-                color_correction=None,
-                cur_sh_degree=None,
                 se3_transform=cur_se_transform,
-                camera_indices=None,
                 rigging_params=rigging_params_t,
+                intrinsics=cur_intrinsics,
+                image_width=image_width,
+                image_height=image_height,
+                cam_2_world=cur_cam_2_world,
+                world_2_cam=cur_world_2_cam,
+                camera_indices=None,
+                cur_sh_degree=None,
                 flame_params=flame_params_t,
                 audio_features=audio_features_t,
                 background=background,
+                _means_override=cur_mean_positions,
             )
-            video[t] = rendered_images[0]
+            # video[t] = rendered_images[0]
+            image = rendered_images[0] * 255
+            image = image.cpu().numpy().astype(np.uint8)
+            video.append(image)
 
-        video = video * 255
-        video = video.cpu().numpy().astype(np.uint8)
+        video = np.stack(video, axis=0)
         return video
 
 
@@ -914,6 +1050,7 @@ def training_loop(config_path: str) -> None:
     """
     config = load_config(config_path, mode='dynamic')
     model = DynamicGaussianSplatting(
+        name=config.name,
         gaussian_splatting_settings=config.gaussian_splatting_settings,
         learning_rates=config.learning_rates,
         enable_viewer=config.enable_viewer,
@@ -938,6 +1075,7 @@ def training_loop(config_path: str) -> None:
         cameras=TRAIN_CAMS,
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
         window_size=config.gaussian_splatting_settings.prior_window_size,
+        image_downsampling_factor=config.gaussian_splatting_settings.image_downsampling_factor,
     )
     train_loader = DataLoader(
         train_set,
@@ -951,6 +1089,7 @@ def training_loop(config_path: str) -> None:
         cameras=TEST_CAMS,
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
         window_size=config.gaussian_splatting_settings.prior_window_size,
+        image_downsampling_factor=config.gaussian_splatting_settings.image_downsampling_factor,
     )
     val_loader = DataLoader(
         val_set,
@@ -996,6 +1135,7 @@ def start_viewer(
     """
     config = load_config(config_path, mode='dynamic')
     model = DynamicGaussianSplatting(
+        name=config.name,
         gaussian_splatting_settings=config.gaussian_splatting_settings,
         learning_rates=config.learning_rates,
         enable_viewer=True,
@@ -1047,10 +1187,13 @@ if __name__ == "__main__":
     # Visualization mode
     if args.visualize:
         model = DynamicGaussianSplatting.load_from_checkpoint(
-            args.visualize, ckpt_path=args.visualize)
+            args.visualize,
+            ckpt_path=args.visualize,
+            viewer_sequences=[3, 100],
+        )
         model.cuda()
         print("Starting viewer...")
-        model.start_viewer(mode='rendering', sequence=79)
+        model.start_viewer(mode='rendering')
         print("To exit, press Ctrl+C.")
         time.sleep(100000)
 

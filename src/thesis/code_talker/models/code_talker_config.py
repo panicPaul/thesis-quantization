@@ -22,6 +22,7 @@ class QuantizerConfig(NamedTuple):
         disable_neck (bool):
     """
     n_vertices: int = 5143
+    use_flame_code: bool = False
     hidden_size: int = 1024
     num_hidden_layers: int = 6
     num_attention_heads: int = 8
