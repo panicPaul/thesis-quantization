@@ -80,7 +80,7 @@ class Stage1Runner(pl.LightningModule):
         if not self.config.use_flame_code:
             rec_loss = nn.functional.l1_loss(pred, target)
             flame_loss = None
-            vertex_loss = None
+            vertex_loss = rec_loss
         else:
             flame_loss = nn.functional.mse_loss(pred, target)
             pred_params = flame_code_to_params(pred)
@@ -89,7 +89,7 @@ class Stage1Runner(pl.LightningModule):
             target_vertices = self.flame_head.forward(target_params)
             vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
             # TODO: add weights here, log both losses!
-            rec_loss = vertex_loss
+            rec_loss = vertex_loss + 0.1*flame_loss
 
         # loss is VQ reconstruction + weighted pre-computed quantization loss
         quant_loss = quant_loss.mean()

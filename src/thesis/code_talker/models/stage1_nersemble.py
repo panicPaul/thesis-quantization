@@ -228,7 +228,15 @@ class VQAutoEncoder(nn.Module):
             return dec * 1e-3
         else:
             dec = dec.view(batch_size, -1, 413)
-            return dec * 1e-3
+            shape = dec[..., :300] * 1e-4
+            expr = dec[..., 300:400] * 1e-2
+            neck = dec[..., 400:403] * 1e-2 if not self.disable_neck else torch.zeros_like(
+                dec[..., 400:403])
+            jaw = dec[..., 403:406] * 1e-2
+            eye = dec[..., 406:412] * 1e-3
+            scale = dec[..., 412:413] * 1e-4
+            dec = torch.cat([shape, expr, neck, jaw, eye, scale], dim=-1)
+            return dec
 
     def forward(
         self,

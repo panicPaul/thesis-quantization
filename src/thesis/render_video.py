@@ -518,9 +518,9 @@ if __name__ == '__main__':
                   'gt'] = 'audio'
     sequence: int | None = 3
     audio_path: str | None = None
-    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_noisy_audio/version_0/checkpoints/epoch=2-step=240000.ckpt'  # noqa
+    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
     # audio_to_flame_checkpoint: str | None = None
-    audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/baseline_vertex_prediction/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
+    audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/small_shape_vqvae/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
     quicktime_compatible: bool = False
     smoothing_mode: Literal['none', 'gaussian', 'moving_average', 'savgol', 'exponential'] = 'none'
     background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 0.8

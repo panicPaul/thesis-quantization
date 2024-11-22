@@ -1,5 +1,5 @@
 
-name: 2dgs_full_res_500k_noisy_audio
+name: 2dgs_full_res_500k_overnight
 # port 46551
 
 # ---> gaussian splatting settings
@@ -31,12 +31,12 @@ gaussian_splatting_settings:
   densification_mode: monte_carlo_markov_chain
   # densification_mode: default
   refine_start_iteration: 250
-#   refine_stop_iteration: 90_000
-#   train_iterations: 100_000
-#   lpips_start_iteration: 35_000
-  refine_stop_iteration: 25_000
-  train_iterations: 30_000
-  lpips_start_iteration: 10_000
+  refine_stop_iteration: 90_000
+  train_iterations: 100_000
+  lpips_start_iteration: 35_000
+  # refine_stop_iteration: 25_000
+  # train_iterations: 30_000
+  # lpips_start_iteration: 10_000
   cap_max: 500_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
   image_downsampling_factor: 1.0

@@ -1,16 +1,15 @@
 # Config for the VQ-VAE model
-name: vertex_baseline
+name: flame_code_smaller_shape
 
 model:
   quantization_mode: default
   disable_neck: true
   n_vertices: 5443
-  use_flame_code: false
+  use_flame_code: true
 
 
 training:
-  epochs: 200
-  # base_lr: 0.0001
-  base_lr: 0.001
+  epochs: 100
+  base_lr: 0.0001
 
 compile: false

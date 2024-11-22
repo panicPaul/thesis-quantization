@@ -209,13 +209,13 @@ if __name__ == '__main__':
     # mode = 'audio_pred_sequence'
     # mode = 'flame'
     quick_time_compatible = False
-    sequence = 3
+    sequence = 100
 
     match mode:
         case 'vertex_reconstruction':
             # vertex reconstruction
             # checkpoint_path = 'tb_logs/vector_quantization/default_flame_vertex_loss/version_2/checkpoints/epoch=199-step=15400.ckpt'  # noqa
-            checkpoint_path = 'tb_logs/vector_quantization/vertex_baseline/version_0/checkpoints/epoch=199-step=15400.ckpt'  # noqa
+            checkpoint_path = 'tb_logs/vector_quantization/flame_code_smaller_shape/version_1/checkpoints/epoch=99-step=7700.ckpt'  # noqa
             output_path = f'tmp/vq_reconstruction_sequence_{sequence}.mp4'
             render_vertex_reconstruction(
                 checkpoint_path,
@@ -224,7 +224,7 @@ if __name__ == '__main__':
                 quick_time_compatible=quick_time_compatible)
 
         case 'audio_pred_sequence':
-            checkpoint_path = 'tb_logs/audio_prediction/baseline_vertex_prediction/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
+            checkpoint_path = 'tb_logs/audio_prediction/baseline_vertex_prediction/version_2/checkpoints/epoch=99-step=7700.ckpt'  # noqa
             output_path = f'tmp/audio_pred_sequence_{sequence}.mp4'
             render_audio_prediction(
                 checkpoint_path,
@@ -242,3 +242,6 @@ if __name__ == '__main__':
                 quick_time_compatible=quick_time_compatible,
                 use_neck=use_neck,
             )
+
+        case _:
+            raise ValueError(f"Invalid mode: {mode}")
