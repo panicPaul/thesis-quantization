@@ -1066,6 +1066,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
             video.append(image)
 
         video = np.stack(video, axis=0)
+        assert video.shape[0] == n_frames - window_size + 1, \
+            f"Expected {n_frames - window_size + 1} frames, got {video.shape[0]} frames."
         return video
 
 

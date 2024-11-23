@@ -38,15 +38,15 @@ from thesis.video_utils import add_audio
 
 @torch.no_grad()
 def process_audio(
-        audio_path: str,
-        fps: int = 30,  # ahhh it's not actually 30, just very close to it
+    audio_path: str,
+    n_frames: int | None,
 ) -> Float[torch.Tensor, 'time 1024']:
     """
     Loads the audio from disk and processes it to extract features.
 
     Args:
         audio_path: Path to the audio file.
-        fps: Frames per second. Defaults to 30.
+        n_frames: Number of frames to process.
         device: Device to use. Defaults to 'cuda'.
 
     Returns:
@@ -70,8 +70,9 @@ def process_audio(
         audio, sr = sf.read(audio_path)
     audio = librosa.resample(audio, orig_sr=sr, target_sr=16_000)
     sr = 16_000
-    audio_length = len(audio) / sr  # in seconds
-    n_frames = int(audio_length * fps)
+    if n_frames is None:
+        audio_length = len(audio) / sr  # in seconds
+        n_frames = int(audio_length * 30.2)
     audio_features = process_sequence_interpolation(
         audio=audio,
         sampling_rate=sr,
@@ -430,9 +431,8 @@ def render_gt_video(
 
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         out.write(image)
-
     out.release()
-    add_audio(
+    add_audio(  # adds a frame here for some reason in edge cases
         video_path=output_path,
         audio_path=audio_path,
         fps=30,
@@ -477,7 +477,12 @@ def main(
     """
 
     # Set up
-    audio_features = process_audio(audio_path)
+    if flame_params_sequence is not None:
+        sm = SequenceManager(flame_params_sequence)
+        n_frames = sm.flame_params[:].expr.shape[0]
+    else:
+        n_frames = None
+    audio_features = process_audio(audio_path, n_frames)
     splats = DynamicGaussianSplatting.load_from_checkpoint(
         gaussian_splats_checkpoint_path, ckpt_path=gaussian_splats_checkpoint_path)
     splats.eval()
@@ -554,15 +559,15 @@ def main(
     )
 
 
-# ==================================================================================== #
-#                                       MAIN                                           #
-# ==================================================================================== #
+# ============================================================================================== #
+#                                       MAIN FUNCTION                                            #
+# ============================================================================================== #
 
 if __name__ == '__main__':
     # Arguments
     mode: Literal['flame', 'audio'
                   'gt'] = 'flame'
-    sequence: int | None = 100
+    sequence: int | None = 85
     audio_path: str | None = None  # 'tmp/german_test.m4a'
     gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
     # audio_to_flame_checkpoint: str | None = None

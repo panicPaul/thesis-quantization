@@ -151,16 +151,29 @@ def fov_video_vdp(
     return a.item(), heatmap
 
 
+# =============================================================================================== #
+#                                    Evaluation Function                                          #
+# =============================================================================================== #
+
+
 def evaluate(
     gt_videos_directory: str,
     pred_videos_directory: str,
     output_directory: str | None = None,
     sequences: list[str] | list[int] | None = None,
     device: torch.device | str = 'cpu',
+    cut_lower_n_pixels: int = 350,
 ) -> None:
     """
-    Evaluate videos.
-
+    Args:
+        gt_videos_directory: Directory containing ground truth videos.
+        pred_videos_directory: Directory containing predicted videos.
+        output_directory: Directory to save evaluation results.
+        sequences: List of sequences to evaluate.
+        device: Device to use for computation.
+        cut_lower_n_pixels: Number of pixels to cut from the lower part of the video. The
+            segmentation masks don't always reach to the very bottom of the screen, which isn't
+            ideal. The neck isn't really part of our evaluation anyways, so we can cut it off.
     """
 
     computer = _EvaluationComputer()
@@ -194,9 +207,9 @@ def evaluate(
             sequence = f'sequence_{sequence}.mp4'
         print('Loading videos')
         gt_video = load_video(f'{gt_videos_directory}/{sequence}')
-        gt_video = torch.from_numpy(gt_video)
+        gt_video = torch.from_numpy(gt_video)[:, :-cut_lower_n_pixels]
         pred_video = load_video(f'{pred_videos_directory}/{sequence}')
-        pred_video = torch.from_numpy(pred_video)
+        pred_video = torch.from_numpy(pred_video)[:, :-cut_lower_n_pixels]
         print('Done!')
         results_sequence = computer(gt_video, pred_video, device)
         results['psnr'].append(results_sequence['psnr'])
@@ -237,6 +250,11 @@ def evaluate(
     print(f'Average L1: {results["l1_avg"]}')
     print(f'Average Foveated Video Quality Prediction: {results["fov_video_vdp_avg"]}')
     print(f'Results saved to {output_path}')
+
+
+# =============================================================================================== #
+#                                    Graphing Function                                            #
+# =============================================================================================== #
 
 
 def graph_evaluation(dir_path: str) -> None:
@@ -439,14 +457,14 @@ def plot_all_visualizations(dir_path: str):
 
 if __name__ == '__main__':
 
-    gt_path = 'tmp/gt/masked'
-    pred_path = 'tmp/pred/2dgs_full_res_500k_overnight_rigging_large_lpips/flame'
+    gt_dir = 'tmp/gt/masked'
+    pred_dir = 'tmp/pred/2dgs_full_res_500k_overnight_rigging_large_lpips/flame'
     # evaluate(
-    #     gt_path=gt_path,
-    #     pred_path=pred_path,
+    #     gt_path=gt_dir,
+    #     pred_path=pred_dir,
     #     sequences=[i for i in range(80, 102)],
     #     device='cuda',
     # )
-    graph_evaluation(pred_path)
-
-    # test why I can't launch it directly, but can call it from another script
+    for key, value in plot_all_visualizations(pred_dir).items():
+        print(key)
+        value.show()
