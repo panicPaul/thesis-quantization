@@ -2,7 +2,10 @@
 
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Tuple
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pydub
@@ -203,3 +206,166 @@ def render_mesh_image(
     image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
     plt.close(fig)
     return image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+
+def _load_video(path: str) -> Float[np.ndarray, "time height width 3"]:
+    """
+    Load a video as a numpy array.
+
+    Args:
+        path: Path to the video file.
+
+    Returns:
+        The video as a numpy array, of shape (time, height, width, 3).
+    """
+    cap = cv2.VideoCapture(path)
+    frames = []
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame)
+    cap.release()
+    return np.stack(frames) / 255.0
+
+
+def get_video_info(path: str) -> Tuple[int, int, int, int]:
+    """
+    Get video metadata without loading the full video.
+
+    Args:
+        path: Path to the video file
+    Returns:
+        Tuple of (frame_count, height, width, fps)
+    """
+    cap = cv2.VideoCapture(path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    cap.release()
+    return frame_count, height, width, fps
+
+
+def process_frame_chunk(args: Tuple[str, int, int, int]) -> np.ndarray:
+    """
+    Process a chunk of frames from the video.
+
+    Args:
+        args: Tuple of (video_path, start_frame, chunk_size, total_frames)
+    Returns:
+        Numpy array of processed frames
+    """
+    video_path, start_frame, chunk_size, total_frames = args
+    cap = cv2.VideoCapture(video_path)
+
+    # Set position to start frame
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    # Pre-allocate memory for chunk
+    end_frame = min(start_frame + chunk_size, total_frames)
+    actual_chunk_size = end_frame - start_frame
+    frames = np.empty((actual_chunk_size, int(cap.get(
+        cv2.CAP_PROP_FRAME_HEIGHT)), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), 3),
+                      dtype=np.uint8)
+
+    for i in range(actual_chunk_size):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        # Convert BGR to RGB directly into pre-allocated array
+        frames[i] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    cap.release()
+    return frames
+
+
+def load_video(
+    path: str,
+    chunk_size: int = 32,
+    num_workers: Optional[int] = None,
+) -> Float[np.ndarray, "time height width 3"]:
+    """
+    Load a video as a numpy array with parallel processing.
+
+    Args:
+        path: Path to the video file
+        chunk_size: Number of frames to process in each chunk
+        num_workers: Number of parallel workers (defaults to CPU count)
+    Returns:
+        The video as a numpy array of shape (time, height, width, 3)
+    """
+    # Get video information
+    frame_count, height, width, fps = get_video_info(path)
+
+    # Calculate chunks
+    # num_chunks = math.ceil(frame_count / chunk_size)
+    chunk_starts = range(0, frame_count, chunk_size)
+
+    # Create arguments for parallel processing
+    chunk_args = [(path, start, chunk_size, frame_count) for start in chunk_starts]
+
+    # Process chunks in parallel
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        chunks = list(executor.map(process_frame_chunk, chunk_args))
+
+    # Concatenate chunks and convert to float32
+    return np.concatenate(chunks).astype(np.float32) / 255.0
+
+
+def save_video(
+    video: Float[np.ndarray, "time height width 3"],
+    path: str,
+    fps: int = 30,
+    audio_path: str | None = None,
+) -> None:
+    """
+    Save a video as a numpy array to a file.
+
+    Args:
+        video: Video as a numpy array of shape (time, height, width, 3)
+        path: Path to save the video file
+        fps (int): Frames per second of the video
+    """
+    # Get video dimensions
+    num_frames, height, width, channels = video.shape
+
+    # Convert to uint8 if input is float in [0, 1]
+    if video.dtype == np.float32 or video.dtype == np.float64:
+        if video.max() <= 1.0:
+            video = (video * 255).astype(np.uint8)
+        else:
+            video = video.astype(np.uint8)
+
+    # Initialize video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(path, fourcc, fps, (width, height))
+
+    for frame in video:
+        writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    writer.release()
+
+    # Add audio if provided
+    if audio_path is not None:
+        add_audio(
+            video_path=path,
+            audio_path=audio_path,
+            fps=fps,
+            quicktime_compatible=False,
+            trim_to_fit=True,
+        )
+
+
+def get_audio_path(sequence: int) -> str:
+    """
+    Get the path to the audio file for the given sequence number.
+
+    Args:
+        sequence: Sequence number
+    Returns:
+        Path to the audio file
+    """
+    audio_path = '../new_master_thesis/data/nersemble/Paul-audio-856/856/sequences/' \
+        f'sequence_{sequence:04d}/audio/audio_recording.ogg'
+    return audio_path

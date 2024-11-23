@@ -337,6 +337,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         cur_sh_degree: int | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
+        windowed_rigging_params: Float[torch.Tensor, "window n_vertices 3"] | None = None,
         background: Float[torch.Tensor, "3"] | None = None,
         _means_override: Float[torch.Tensor, "n_splats 3"] | None = None,
     ) -> tuple[
@@ -360,6 +361,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
             cur_sh_degree (int): Current SH degree.
             flame_params (UnbatchedFlameParams): Flame parameters.
             audio_features (torch.Tensor): Audio features. Shape: `(window_size, 1024)`.
+            windowed_rigging_params (torch.Tensor): Windowed rigging parameters. Shape:
+                `(window, n_vertices, 3)`.
             background (torch.Tensor): Background.
             _means_override (torch.Tensor): Means override. This is used when we want to smooth
                 the trajectories of the splats.
@@ -408,6 +411,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             cur_sh_degree=cur_sh_degree,
             flame_params=flame_params,
             audio_features=audio_features,
+            windowed_rigging_params=windowed_rigging_params,
             infos=infos,
         )
 
@@ -518,8 +522,10 @@ class DynamicGaussianSplatting(pl.LightningModule):
             eye=self.viewer_flame_params_eye[time_step:time_step + window_size],
             scale=self.viewer_flame_params_scale[time_step:time_step + window_size],
         )
-        rigging_params = self.flame_head.forward(flame_params)  # (window_size, n_vertices, 3)
-        rigging_params = rigging_params[rigging_params.shape[0] // 2]  # (n_vertices, 3)
+        windowed_rigging_params = self.flame_head.forward(
+            flame_params)  # (window_size, n_vertices, 3)
+        rigging_params = windowed_rigging_params[windowed_rigging_params.shape[0]
+                                                 // 2]  # (n_vertices, 3)
 
         image, _, depth, _ = self.forward(
             intrinsics=intrinsics,
@@ -530,6 +536,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             se3_transform=se3,
             rigging_params=rigging_params,
             flame_params=flame_params,
+            windowed_rigging_params=windowed_rigging_params,
             audio_features=audio_features,
         )
 
@@ -588,8 +595,10 @@ class DynamicGaussianSplatting(pl.LightningModule):
 
         # Get Rigging params
         frame, flame_params, audio_features = batch
-        rigging_params = self.flame_head.forward(flame_params)  # (window_size, n_vertices, 3)]
-        rigging_params = rigging_params[rigging_params.shape[0] // 2]  # (n_vertices, 3)
+        windowed_rigging_params = self.flame_head.forward(
+            flame_params)  # (window_size, n_vertices, 3)]
+        rigging_params = windowed_rigging_params[windowed_rigging_params.shape[0]
+                                                 // 2]  # (n_vertices, 3)
 
         # Forward pass
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
@@ -603,6 +612,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             cur_sh_degree=self.max_sh_degree,
             flame_params=flame_params,
             audio_features=audio_features,
+            windowed_rigging_params=windowed_rigging_params,
             background=self.default_background,
         )
 
@@ -738,8 +748,10 @@ class DynamicGaussianSplatting(pl.LightningModule):
 
         # Get Rigging params
         frame, flame_params, audio_features = batch
-        rigging_params = self.flame_head.forward(flame_params)  # (window_size, n_vertices, 3)]
-        rigging_params = rigging_params[rigging_params.shape[0] // 2]  # (n_vertices, 3)
+        windowed_rigging_params = self.flame_head.forward(
+            flame_params)  # (window_size, n_vertices, 3)]
+        rigging_params = windowed_rigging_params[windowed_rigging_params.shape[0]
+                                                 // 2]  # (n_vertices, 3)
 
         # Forward pass
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
@@ -752,6 +764,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             cur_sh_degree=self.max_sh_degree,
             flame_params=flame_params,
             audio_features=audio_features,
+            windowed_rigging_params=windowed_rigging_params,
             background=self.default_background,
             world_2_cam=frame.world_2_cam,
         )
@@ -820,6 +833,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         cam_2_world: Float[torch.Tensor, 'time 4 4'] | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, 'time 1024'] | None = None,
+        windowed_rigging_params: Float[torch.Tensor, 'time n_vertices 3'] | None = None,
         background: Float[torch.Tensor, '3'] | None = None,
     ) -> Float[torch.Tensor, 'time n_splats 3']:
         """
@@ -835,6 +849,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
             audio_features (torch.Tensor): The audio features, shape: `(time , 1024)`. Note that
                 the audio features should have the same length as the
                 se_transforms + window_size - 1.
+            windowed_rigging_params (torch.Tensor): The windowed rigging parameters, shape:
+                `(time, n_vertices, 3)`.
             background (torch.Tensor): The background.
         """
 
@@ -876,6 +892,12 @@ class DynamicGaussianSplatting(pl.LightningModule):
             else:
                 audio_features_t = None
 
+            if windowed_rigging_params is not None:
+                windowed_rigging_params_t = windowed_rigging_params[t - window_size//2:t
+                                                                    + window_size//2 + 1]
+            else:
+                windowed_rigging_params_t = None
+
             # set up transformation matrices
             assert (cur_cam_2_world is None) != (cur_world_2_cam is None), \
                 "Either `cur_cam_2_world` or `cur_world_2_cam` must be provided."
@@ -912,6 +934,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 cur_sh_degree=None,
                 flame_params=flame_params_t,
                 audio_features=audio_features_t,
+                windowed_rigging_params=windowed_rigging_params_t,
                 infos=infos,
             )
             trajectories[t - window_size//2] = means
@@ -930,6 +953,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         cam_2_world: Float[torch.Tensor, 'time 4 4'] | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, 'time 1024'] | None = None,
+        windowed_rigging_params: Float[torch.Tensor, 'time n_vertices 3'] | None = None,
         background: Float[torch.Tensor, '3'] | None = None,
         trajectories: Float[torch.Tensor, 'time n_splats 3'] | None = None,
     ) -> UInt8[np.ndarray, 'time H W 3']:
@@ -948,6 +972,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 as the intrinsics + window_size - 1.
             audio_features (torch.Tensor): The audio features, shape: `(time , 1024)`. Note that
                 the audio features should have the same length as the intrinsics + window_size - 1.
+            windowed_rigging_params (torch.Tensor): The windowed rigging parameters, shape:
+                `(time, n_vertices, 3)`.
             background (torch.Tensor): The background.
             trajectories (torch.Tensor): Pre-computed trajectories. This is useful if we want to
                 smooth the trajectories of the splats.
@@ -1003,6 +1029,12 @@ class DynamicGaussianSplatting(pl.LightningModule):
             else:
                 audio_features_t = None
 
+            if windowed_rigging_params is not None:
+                windowed_rigging_params_t = windowed_rigging_params[t - window_size//2:t
+                                                                    + window_size//2 + 1]
+            else:
+                windowed_rigging_params_t = None
+
             if trajectories is not None:
                 try:
                     cur_mean_positions = trajectories[t - window_size//2]
@@ -1024,6 +1056,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 cur_sh_degree=None,
                 flame_params=flame_params_t,
                 audio_features=audio_features_t,
+                windowed_rigging_params=windowed_rigging_params_t,
                 background=background,
                 _means_override=cur_mean_positions,
             )

@@ -24,6 +24,7 @@ from thesis.audio_feature_processing.wav2vec import (
     process_sequence_interpolation,
 )
 from thesis.code_talker.stage2_runner import Stage2Runner
+from thesis.constants import CANONICAL_FLAME_PARAMS
 from thesis.data_management import (
     SequenceManager,
     UnbatchedFlameParams,
@@ -31,6 +32,7 @@ from thesis.data_management import (
 )
 from thesis.flame import FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.dynamic_model import DynamicGaussianSplatting
+from thesis.utils import assign_segmentation_class
 from thesis.video_utils import add_audio
 
 
@@ -87,20 +89,38 @@ def process_audio(
 def audio_to_flame(
     checkpoint_path: str,
     audio_features: Float[torch.Tensor, 'time 1024'],
-) -> UnbatchedFlameParams:
+) -> tuple[Float[torch.Tensor, 'time n_vertices 3'], UnbatchedFlameParams]:
     """
     Args:
         checkpoint_path: Path to the audio-to-flame model checkpoint.
         audio_features: Audio features.
 
     Returns:
-        UnbatchedFlameParams: Flame parameters.
+        tuple: Tuple containing the rigging and flame parameters.
     """
     runner = Stage2Runner.load_from_checkpoint(checkpoint_path)
     runner.eval()
     runner.cuda()
-    flame_params = runner.predict(audio_features)
-    return flame_params
+    predictions = runner.predict(audio_features)
+    if isinstance(predictions, tuple):
+        rigging_params, flame_params = predictions
+    else:
+        rigging_params = predictions
+        n_frames = audio_features.shape[0]
+        flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
+        flame_params = UnbatchedFlameParams(
+            shape=repeat(flame_params.shape.squeeze(0), 'n -> time n', time=n_frames).cuda(),
+            expr=torch.zeros_like(
+                repeat(flame_params.expr.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+            neck=torch.zeros_like(
+                repeat(flame_params.neck.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+            jaw=torch.zeros_like(
+                repeat(flame_params.jaw.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+            eye=torch.zeros_like(
+                repeat(flame_params.eye.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+            scale=repeat(flame_params.scale.squeeze(0), 'n -> time n', time=n_frames).cuda(),
+        )
+    return rigging_params, flame_params
 
 
 def load_flame_parameters(sequence: int) -> UnbatchedFlameParams:
@@ -344,6 +364,7 @@ def render_video_dynamic_gaussian_splatting(
         world_2_cam=world_2_cam,
         flame_params=flame_params,
         audio_features=audio_features,
+        windowed_rigging_params=rigging_params,
         background=background,
         trajectories=trajectories,
     )
@@ -351,11 +372,13 @@ def render_video_dynamic_gaussian_splatting(
 
 
 def render_gt_video(
-    sequence: int,
-    camera: int = 8,
-    output_dir='tmp/gt',
-    trim_size: int = 0,
-    quicktime_compatible: bool = False,
+        sequence: int,
+        camera: int = 8,
+        output_dir='tmp/gt',
+        trim_size: int = 0,
+        quicktime_compatible: bool = False,
+        mask: bool = False,
+        background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66]),
 ) -> None:
     """
     Renders a video from ground truth flame parameters.
@@ -370,6 +393,11 @@ def render_gt_video(
             False.
     """
 
+    if mask:
+        output_dir = f'{output_dir}/masked'
+    os.makedirs(output_dir, exist_ok=True)
+
+    background_color = background_color.cpu().numpy()
     output_path = f'{output_dir}/sequence_{sequence}.mp4'
     sm = SequenceManager(sequence, cameras=[camera])
     audio_path = os.path.join(
@@ -377,7 +405,7 @@ def render_gt_video(
         "sequences",
         sm.sequence,
         "audio",
-        "audio_recording_cleaned.ogg",
+        "audio_recording.ogg",
     )
     width = sm.image_width
     height = sm.image_height
@@ -386,6 +414,20 @@ def render_gt_video(
     for i in tqdm(range(trim_size // 2, len(sm) - trim_size//2), desc='Rendering video'):
         image = sm.images[i][0].numpy() * 255
         image = image.astype(np.uint8)
+
+        if mask:
+            alpha_map = sm.alpha_maps[i][0].numpy()
+            segmentation_mask = sm.segmentation_masks[i][0]
+            segmentation_mask = assign_segmentation_class(
+                segmentation_mask.unsqueeze(0)).squeeze(0).numpy()
+            jumper_mask = np.where(segmentation_mask == 2, 1, 0)
+            background_mask = np.where(segmentation_mask == 0, 1, 0)
+            alpha_map = alpha_map * (1-jumper_mask) * (1-background_mask)
+            alpha_map = repeat(alpha_map, 'h w -> h w c', c=3)
+            background = repeat(background_color, 'n -> h w n', h=height, w=width) * 255
+            image = image*alpha_map + background * (1-alpha_map)
+            image = image.astype(np.uint8)
+
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         out.write(image)
 
@@ -443,8 +485,11 @@ def main(
     assert (audio_to_flame_checkpoint_path is not None) ^ (flame_params_sequence is not None), \
         "Either provide a checkpoint for audio-to-flame prediction or a sequence number to load " \
         "ground truth flame parameters."
-    name = f'sequence_{sequence}' if flame_params_sequence is not None else audio_path.split(
-        '/')[-3]
+    try:
+        name = f'sequence_{sequence}' if flame_params_sequence is not None else audio_path.split(
+            '/')[-3]
+    except IndexError:
+        name = audio_path.split('/')[-1].split('.')[0]
     output_dir = f'{output_dir}/{splats.name}/{mode}'
     if smoothing_mode != 'none':
         output_dir = f'{output_dir}/{smoothing_mode}'
@@ -452,8 +497,11 @@ def main(
     n_frames = audio_features.shape[0]
 
     # Get rigging parameters
+    flame_head = FlameHeadWithInnerMouth()
+    flame_head = flame_head.cuda()
     if audio_to_flame_checkpoint_path is not None:
-        flame_params = audio_to_flame(audio_to_flame_checkpoint_path, audio_features)
+        rigging_params, flame_params = audio_to_flame(audio_to_flame_checkpoint_path,
+                                                      audio_features)
     else:
         sm = SequenceManager(flame_params_sequence)
         flame_params = sm.flame_params[:n_frames]
@@ -465,9 +513,7 @@ def main(
             eye=flame_params.eye.cuda(),
             scale=flame_params.scale.cuda(),
         )
-    flame_head = FlameHeadWithInnerMouth()
-    flame_head = flame_head.cuda()
-    rigging_params = flame_head.forward(flame_params)
+        rigging_params = flame_head.forward(flame_params)
 
     # Get SE3 transforms
     if flame_params_sequence is not None:
@@ -515,12 +561,12 @@ def main(
 if __name__ == '__main__':
     # Arguments
     mode: Literal['flame', 'audio'
-                  'gt'] = 'audio'
-    sequence: int | None = 3
-    audio_path: str | None = None
-    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+                  'gt'] = 'flame'
+    sequence: int | None = 100
+    audio_path: str | None = None  # 'tmp/german_test.m4a'
+    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
     # audio_to_flame_checkpoint: str | None = None
-    audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/small_shape_vqvae/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
+    audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/new_baseline_vertex_200/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
     quicktime_compatible: bool = False
     smoothing_mode: Literal['none', 'gaussian', 'moving_average', 'savgol', 'exponential'] = 'none'
     background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 0.8
@@ -567,7 +613,12 @@ if __name__ == '__main__':
             model = DynamicGaussianSplatting.load_from_checkpoint(
                 gaussian_splats_checkpoint, ckpt_path=gaussian_splats_checkpoint)
             window_size = model.gaussian_splatting_settings.prior_window_size
-            render_gt_video(sequence=sequence, trim_size=window_size)
+            render_gt_video(
+                sequence=sequence,
+                trim_size=window_size,
+                mask=True,
+                background_color=background_color,
+            )
 
         case 'flame':
             assert sequence is not None, "Sequence number must be provided."

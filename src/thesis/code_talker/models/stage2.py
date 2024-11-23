@@ -50,6 +50,7 @@ class CodeTalker(nn.Module):
             param.requires_grad = False
         self.disable_neck = stage_1_runner.config.disable_neck
         self.use_flame_code = stage_1_runner.config.use_flame_code
+        self.flame_code_head = stage_1_runner.config.flame_code_head
 
         # audio map
         self.audio_feature_map = nn.Linear(1024, feature_dim)
@@ -138,9 +139,10 @@ class CodeTalker(nn.Module):
         vertices_out = vertices_out + template  # (batch, seq_len, v, 3)
 
         # loss
-        loss_motion = nn.functional.mse_loss(vertices_out, gt)  # (batch, seq_len, v, 3)
-        # loss_motion = nn.functional.l1_loss(vertices_out, vertices)
-        loss_reg = nn.functional.mse_loss(feat_out, feat_q_gt.detach())
+        # loss_motion = nn.functional.mse_loss(vertices_out, gt)  # (batch, seq_len, v, 3)
+        # loss_reg = nn.functional.mse_loss(feat_out, feat_q_gt.detach())
+        loss_motion = nn.functional.l1_loss(vertices_out, gt)  # (batch, seq_len, v, 3)
+        loss_reg = nn.functional.l1_loss(feat_out, feat_q_gt.detach())
 
         return self.motion_weight * loss_motion + self.reg_weight * loss_reg, loss_motion, loss_reg
 

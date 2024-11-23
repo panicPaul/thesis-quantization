@@ -101,6 +101,7 @@ class DynamicGaussianSplattingSettings:
     per_gaussian_motion_adjustment: bool = True
     per_gaussian_motion_adjustment_use_audio: bool = False
     per_gaussian_motion_adjustment_use_flame: bool = False
+    per_gaussian_motion_adjustment_use_rigging: bool = False
     learnable_shader: bool = False
 
     # rasterization_settings

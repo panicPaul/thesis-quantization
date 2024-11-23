@@ -31,6 +31,7 @@ dependencies:
     - "git+https://github.com/mattloper/chumpy"
     - "git+https://github.com/panicPaul/nerfview.git"
     - "git+https://github.com/panicPaul/PLAS.git"
+    - "git+https://github.com/gfxdisp/FovVideoVDP.git"
 
     # other non standard dependencies
     #- "pyvista --no-deps"

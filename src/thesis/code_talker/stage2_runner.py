@@ -66,8 +66,19 @@ class Stage2Runner(pl.LightningModule):
         # NOTE: even tho we do have weight decay as a config option they do not use it in their
         #       code base for whatever reason.
         optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            [{
+                'params': self.model.audio_feature_map.parameters(),
+            }, {
+                'params': self.model.vertices_map.parameters(),
+            }, {
+                'params': self.model.PPE.parameters(),
+            }, {
+                'params': self.model.transformer_decoder.parameters(),
+            }, {
+                'params': self.model.feat_map.parameters(),
+            }],
             lr=self.training_config.base_lr,
+            weight_decay=0.002,
         )
         # scheduler = StepLR(
         #    optimizer, step_size=self.training_config.step_size, gamma=self.training_config.gamma)
@@ -154,7 +165,22 @@ class Stage2Runner(pl.LightningModule):
             template = self.canonical_flame_code
         else:
             template = self.canonical_flame_vertices
-        return self.model.predict(audio_features, template)
+        flame_vertices = self.model.predict(audio_features, template)
+
+        if self.model.flame_code_head:
+            flame_vertices = flame_vertices.unsqueeze(0)
+            flame_params = self.model.autoencoder.flame_head_forward(flame_vertices)
+            flame_params = UnbatchedFlameParams(
+                shape=flame_params.shape.squeeze(0),
+                expr=flame_params.expr.squeeze(0),
+                neck=flame_params.neck.squeeze(0),
+                jaw=flame_params.jaw.squeeze(0),
+                eye=flame_params.eye.squeeze(0),
+                scale=flame_params.scale.squeeze(0),
+            )
+            return flame_vertices.squeeze(0), flame_params
+        else:
+            return flame_vertices
 
 
 # ==================================================================================== #

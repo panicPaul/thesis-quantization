@@ -60,6 +60,7 @@ class PerGaussianDeformations(nn.Module):
         window_size: int,
         use_audio_features: bool,
         use_flame_params: bool,
+        use_rigging_params: bool,
         mlp_layers: int,
         mlp_hidden_size: int,
         per_gaussian_latent_dim: int = 32,
@@ -70,6 +71,7 @@ class PerGaussianDeformations(nn.Module):
             window_size (int): The window size.
             use_audio_features (bool): Whether to use audio features.
             use_flame_params (bool): Whether to use flame parameters.
+            use_rigging_params (bool): Whether to use vertex rigging parameters.
             mlp_layers (int): The number of layers in the mlp.
             mlp_hidden_size (int): The hidden size of the mlp.
             use_audio_code_book (bool): Whether to use audio code book. Defaults to False.
@@ -79,6 +81,7 @@ class PerGaussianDeformations(nn.Module):
         self.use_audio_features = use_audio_features
         self.use_audio_code_book = use_audio_code_book
         self.use_flame_params = use_flame_params
+        self.use_rigging_params = use_rigging_params
 
         # input
         input_size = 14 + per_gaussian_latent_dim  # 14 for 6dof position and adjustment
@@ -113,6 +116,19 @@ class PerGaussianDeformations(nn.Module):
                 output_size=32,
                 n_layers=3,
             )
+        if use_rigging_params:
+            input_size += 32
+            self.rigging_squasher = _Squasher(
+                input_size=5443 * 3,  # 5443 vertices
+                hidden_size=256,
+                output_size=256,
+                n_layers=3,
+            )
+            self.rigging_mlp = nn.Sequential(
+                nn.Linear(256, 128),
+                nn.SiLU(),
+                nn.Linear(128, 32),
+            )
 
         # mlp
         mlp_layer_list = []
@@ -131,6 +147,7 @@ class PerGaussianDeformations(nn.Module):
         rigged_translation: Float[torch.Tensor, "n_gaussians 3"],
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
         flame_params: UnbatchedFlameParams | None = None,
+        rigging_params: Float[torch.Tensor, "window n_vertices 3"] | None = None,
     ) -> tuple[Float[torch.Tensor, 'n_gaussians 4'], Float[torch.Tensor, 'n_gaussians 3']]:
         """
         Computes the final adjustments to the per gaussian means and quaternions. Returns the
@@ -143,6 +160,8 @@ class PerGaussianDeformations(nn.Module):
                 `(n_gaussians, 3)`.
             audio_features (torch.Tensor): The audio features. Has shape `(window_size, 1024)`.
             flame_params (UnbatchedFlameParams): The flame parameters.
+            rigging_params (torch.Tensor): The rigging parameters. Has shape
+                `(window, n_vertices, 3)`.
 
         Returns:
             tuple: A tuple containing
@@ -178,6 +197,14 @@ class PerGaussianDeformations(nn.Module):
             flame_features = repeat(
                 flame_features, "f -> n_gaussians f", n_gaussians=means.shape[0])
             input_list.append(flame_features)
+
+        if self.use_rigging_params:
+            rigging_params = rigging_params.reshape(rigging_params.shape[0], -1)
+            rigging_features = self.rigging_squasher(rigging_params)
+            rigging_features = self.rigging_mlp(rigging_features)
+            rigging_features = repeat(
+                rigging_features, "f -> n_gaussians f", n_gaussians=means.shape[0])
+            input_list.append(rigging_features)
 
         input_tensor = torch.concatenate(input_list, dim=-1)
         adjustments = self.mlp.forward(input_tensor)

@@ -1,6 +1,6 @@
 
-name: 2dgs_full_res_500k_overnight
-# port 46551
+name: 2dgs_full_res_500k_rigging_large_lpips
+# port 53823
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
@@ -11,7 +11,9 @@ gaussian_splatting_settings:
   prior_window_size: 21 # two thirds of a second
   per_gaussian_motion_adjustment: true
   per_gaussian_motion_adjustment_use_audio: true
-  per_gaussian_motion_adjustment_use_flame: true
+  per_gaussian_motion_adjustment_use_flame: false
+  per_gaussian_motion_adjustment_use_rigging: true
+
   learnable_shader: true
 
   # rasterization_settings
@@ -30,13 +32,13 @@ gaussian_splatting_settings:
   # densification_settings
   densification_mode: monte_carlo_markov_chain
   # densification_mode: default
-  refine_start_iteration: 250
-  refine_stop_iteration: 90_000
-  train_iterations: 100_000
-  lpips_start_iteration: 35_000
-  # refine_stop_iteration: 25_000
-  # train_iterations: 30_000
-  # lpips_start_iteration: 10_000
+#   refine_start_iteration: 250
+#   refine_stop_iteration: 90_000
+#   train_iterations: 100_000
+#   lpips_start_iteration: 35_000
+  refine_stop_iteration: 25_000
+  train_iterations: 30_000
+  lpips_start_iteration: 10_000
   cap_max: 500_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
   image_downsampling_factor: 1.0
@@ -54,7 +56,7 @@ gaussian_splatting_settings:
   # ssim_image_loss: 0.1
   ssim_image_loss: 0.2
   ssim_denoised_image_loss: null
-  lpips_image_loss: 0.003 #0.001 #0.05 is causing significant artifacts # 1e-3 seems too small tho
+  lpips_image_loss: 0.01 #0.003 #0.001 #0.05 is causing significant artifacts # 1e-3 seems too small tho
   # lpips_image_loss: null
   anisotropy_loss: 0.1
   max_scale_loss: null

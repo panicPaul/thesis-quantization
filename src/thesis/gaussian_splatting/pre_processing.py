@@ -81,6 +81,8 @@ class RiggedPreProcessor(nn.Module):
                 .per_gaussian_motion_adjustment_use_audio,
                 use_flame_params=gaussian_splatting_settings
                 .per_gaussian_motion_adjustment_use_flame,
+                use_rigging_params=gaussian_splatting_settings
+                .per_gaussian_motion_adjustment_use_rigging,
                 mlp_layers=4,
                 mlp_hidden_size=128,
                 per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
@@ -143,6 +145,7 @@ class RiggedPreProcessor(nn.Module):
         cur_sh_degree: int | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
+        windowed_rigging_params: Float[torch.Tensor, "window n_vertices 3"] | None = None,
         infos: dict | None = None,
     ) -> tuple[
             Float[torch.Tensor, "n_gaussians 3"],
@@ -165,6 +168,8 @@ class RiggedPreProcessor(nn.Module):
             cur_sh_degree (int): The current SH degree.
             flame_params (UnbatchedFlameParams): The flame parameters.
             audio_features (torch.Tensor): The audio features. Shape: `(window_size, 1024)`.
+            windowed_rigging_params (torch.Tensor): The windowed rigging parameters. Shape:
+                `(window, n_vertices, 3)`.
             infos (dict): Additional information.
 
 
@@ -231,6 +236,7 @@ class RiggedPreProcessor(nn.Module):
                 rigged_translation=gaussian_translations,
                 audio_features=audio_features,
                 flame_params=flame_params,
+                rigging_params=windowed_rigging_params,
             )
             means = means + translation_adjustments
             quats = quaternion_multiplication(rotation_adjustments, quats)

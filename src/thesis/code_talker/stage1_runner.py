@@ -60,6 +60,7 @@ class Stage1Runner(pl.LightningModule):
         canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)  # (1, v, 3)
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
         self.register_buffer("canonical_flame_code", flame_params_to_code(canonical_flame_params))
+        self.flame_loss_weight = 1e-2
 
     def configure_optimizers(self):
         """ Configures the optimizers and schedulers. """
@@ -79,6 +80,7 @@ class Stage1Runner(pl.LightningModule):
 
         if not self.config.use_flame_code:
             rec_loss = nn.functional.l1_loss(pred, target)
+            # rec_loss = nn.functional.mse_loss(pred, target)
             flame_loss = None
             vertex_loss = rec_loss
         else:
@@ -88,8 +90,9 @@ class Stage1Runner(pl.LightningModule):
             pred_vertices = self.flame_head.forward(pred_params)
             target_vertices = self.flame_head.forward(target_params)
             vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
+            # vertex_loss = nn.functional.mse_loss(pred_vertices, target_vertices)
             # TODO: add weights here, log both losses!
-            rec_loss = vertex_loss + 0.1*flame_loss
+            rec_loss = vertex_loss + flame_loss * self.flame_loss_weight
 
         # loss is VQ reconstruction + weighted pre-computed quantization loss
         quant_loss = quant_loss.mean()
@@ -123,6 +126,15 @@ class Stage1Runner(pl.LightningModule):
         # forward pass
         rec, quant_loss, info = self.model.forward(x, template)
         loss, losses = self.calc_vq_loss(rec, x, quant_loss)
+
+        # flame head
+        if self.config.flame_code_head:
+            rec_flame_params = self.model.flame_head_forward(rec)
+            rec_flame_code = flame_params_to_code(rec_flame_params)
+            gt_flame_code = flame_params_to_code(flame_params)
+            flame_loss = nn.functional.mse_loss(rec_flame_code, gt_flame_code)
+            self.log('train/flame_loss', flame_loss, on_step=False, on_epoch=True, prog_bar=False)
+            loss = loss + flame_loss * self.flame_loss_weight
 
         # logging
         self.log('train/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
@@ -176,6 +188,15 @@ class Stage1Runner(pl.LightningModule):
         # forward pass
         rec, quant_loss, info = self.model.forward(x, template)
         loss, losses = self.calc_vq_loss(rec, x, quant_loss)
+
+        # flame head
+        if self.config.flame_code_head:
+            rec_flame_params = self.model.flame_head_forward(rec)
+            rec_flame_code = flame_params_to_code(rec_flame_params)
+            gt_flame_code = flame_params_to_code(flame_params)
+            flame_loss = nn.functional.mse_loss(rec_flame_code, gt_flame_code)
+            self.log('val/flame_loss', flame_loss, on_step=False, on_epoch=True, prog_bar=False)
+            loss = loss + flame_loss * self.flame_loss_weight
 
         # logging
         self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=False)

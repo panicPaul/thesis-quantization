@@ -12,6 +12,7 @@ from thesis.code_talker.models.lib.base_models import (
     Transformer,
 )
 from thesis.code_talker.models.lib.quantizer import VectorQuantizer
+from thesis.data_management import FlameParams
 
 
 class BottleNeck(nn.Module):
@@ -118,6 +119,7 @@ class VQAutoEncoder(nn.Module):
         self,
         n_vertices: int,
         use_flame_code: bool,
+        flame_code_head: bool,
         hidden_size: int,
         num_hidden_layers: int,
         num_attention_heads: int,
@@ -172,6 +174,18 @@ class VQAutoEncoder(nn.Module):
                 self.quantize = BottleNeck(dim=code_dim)
             case _:
                 raise ValueError(f"Invalid quantization mode: {quantization_mode}")
+
+        if flame_code_head:
+            assert not use_flame_code, "Cannot use both flame code and flame code head"
+            self.flame_code_head = nn.Sequential(
+                nn.Linear(input_dim, 1024),
+                nn.SiLU(),
+                nn.Linear(1024, 512),
+                nn.SiLU(),
+                nn.Linear(512, 512),
+                nn.SiLU(),
+                nn.Linear(512, 413),
+            )
 
     def encode(
         self, x: Float[torch.Tensor, "batch time n_vertices 3"]
@@ -237,6 +251,27 @@ class VQAutoEncoder(nn.Module):
             scale = dec[..., 412:413] * 1e-4
             dec = torch.cat([shape, expr, neck, jaw, eye, scale], dim=-1)
             return dec
+
+    def flame_head_forward(
+            self, vertices: Float[torch.Tensor, "batch time n_vertices 3"]) -> FlameParams:
+        """
+        Computes the flame code based on the input vertices.
+
+        Args:
+            vertices (torch.Tensor): input tensor of shape (batch, time, n_vertices, 3)
+
+        Returns:
+            FlameParams: flame code
+        """
+        vertices = vertices.view(vertices.shape[0], vertices.shape[1], -1)
+        x = self.flame_code_head.forward(vertices)
+        shape = x[..., :300]
+        expr = x[..., 300:400]
+        neck = x[..., 400:403] if not self.disable_neck else torch.zeros_like(x[..., 400:403])
+        jaw = x[..., 403:406]
+        eye = x[..., 406:412]
+        scale = x[..., 412:413]
+        return FlameParams(shape=shape, expr=expr, neck=neck, jaw=jaw, eye=eye, scale=scale)
 
     def forward(
         self,
