@@ -1,6 +1,6 @@
 
 name: 2dgs_full_res_limited_data_3-13
-# port 53823
+# port 36527
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:

@@ -25,8 +25,11 @@ from tqdm import tqdm
 from thesis.config import DynamicGaussianSplattingSettings, load_config
 from thesis.constants import (
     CANONICAL_FLAME_PARAMS,
+    CANONICAL_FLAME_PARAMS_OTHER_GUY,
+    DATA_DIR_NERSEMBLE,
     DEFAULT_SE3_ROTATION,
     DEFAULT_SE3_TRANSLATION,
+    OTHER_GUY_DATA_DIR,
     TEST_CAMS,
     TEST_SEQUENCES,
     TRAIN_CAMS,
@@ -86,10 +89,10 @@ class DynamicGaussianSplatting(pl.LightningModule):
 
         # Save the settings
         self.learning_rates = learning_rates
-        self.gaussian_splatting_settings = gaussian_splatting_settings
         if isinstance(gaussian_splatting_settings, DictConfig):
             gaussian_splatting_settings = DynamicGaussianSplattingSettings(
                 **gaussian_splatting_settings)
+        self.gaussian_splatting_settings = gaussian_splatting_settings
 
         # Process settings
         self.max_sh_degree = gaussian_splatting_settings.sh_degree
@@ -101,7 +104,11 @@ class DynamicGaussianSplatting(pl.LightningModule):
         self.enable_viewer = enable_viewer
 
         # Load canonical flame params
-        canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
+        # TODO: add secondary canonical flame params for the other guy
+        if not self.gaussian_splatting_settings.use_other_guy:
+            canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
+        else:
+            canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS_OTHER_GUY)
         self.register_buffer("canonical_flame_shape", canonical_flame_params.shape)
         self.register_buffer("canonical_flame_expr", canonical_flame_params.expr)
         self.register_buffer("canonical_flame_neck", canonical_flame_params.neck)
@@ -113,8 +120,16 @@ class DynamicGaussianSplatting(pl.LightningModule):
         # Load viewer sequences
         viewer_flame_params_list = []
         viewer_audio_features_list = []
+        if not self.gaussian_splatting_settings.use_other_guy:
+            data_dir = DATA_DIR_NERSEMBLE
+        else:
+            # hacky fix for the other guy
+            if viewer_sequences == [3, 100]:
+                viewer_sequences = [1, 10]
+            data_dir = OTHER_GUY_DATA_DIR
+
         for seq in viewer_sequences:
-            sm = SequenceManager(seq)
+            sm = SequenceManager(seq, data_dir=data_dir)
             viewer_flame_params_list.append(sm.flame_params[:])
             viewer_audio_features_list.append(sm.audio_features[:])
         self.viewer_flame_params_shape = torch.concatenate(
@@ -1107,6 +1122,7 @@ def training_loop(config_path: str) -> None:
     train_set = MultiSequenceDataset(
         sequences=list(config.train_sequences)
         if config.train_sequences is not None else TRAIN_SEQUENCES,
+        data_dir=config.data_dir if config.data_dir is not None else DATA_DIR_NERSEMBLE,
         cameras=TRAIN_CAMS,
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
         window_size=config.gaussian_splatting_settings.prior_window_size,
@@ -1121,6 +1137,7 @@ def training_loop(config_path: str) -> None:
     val_set = MultiSequenceDataset(
         sequences=list(config.val_sequences)
         if config.val_sequences is not None else TEST_SEQUENCES,
+        data_dir=config.data_dir if config.data_dir is not None else DATA_DIR_NERSEMBLE,
         cameras=TEST_CAMS,
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
         window_size=config.gaussian_splatting_settings.prior_window_size,
@@ -1160,6 +1177,7 @@ def training_loop(config_path: str) -> None:
 def start_viewer(
     config_path: str,
     sequences: list[int] | int | None = None,
+    data_dir: str = DATA_DIR_NERSEMBLE,
 ) -> None:
     """
     Starts the viewer.
@@ -1182,7 +1200,7 @@ def start_viewer(
         viewer_flame_params_list = []
         viewer_audio_features_list = []
         for seq in sequences:
-            sm = SequenceManager(seq)
+            sm = SequenceManager(seq, data_dir=data_dir)
             viewer_flame_params_list.append(sm.flame_params[:])
             viewer_audio_features_list.append(sm.audio_features[:])
         model.viewer_flame_params_shape = torch.concatenate(

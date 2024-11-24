@@ -9,7 +9,11 @@ from omegaconf import DictConfig
 from torch.optim import AdamW
 
 from thesis.config import DynamicGaussianSplattingSettings
-from thesis.constants import CANONICAL_FLAME_PARAMS, TRAIN_CAMS
+from thesis.constants import (
+    CANONICAL_FLAME_PARAMS,
+    CANONICAL_FLAME_PARAMS_OTHER_GUY,
+    TRAIN_CAMS,
+)
 from thesis.data_management.data_classes import (
     UnbatchedFlameParams,
     UnbatchedSE3Transform,
@@ -54,7 +58,10 @@ class RiggedPreProcessor(nn.Module):
         self.learning_rates = learning_rates
 
         # Load canonical flame params
-        canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
+        if not gaussian_splatting_settings.use_other_guy:
+            canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
+        else:
+            canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS_OTHER_GUY)
         self.register_buffer("canonical_flame_shape", canonical_flame_params.shape)
         self.register_buffer("canonical_flame_expr", canonical_flame_params.expr)
         self.register_buffer("canonical_flame_neck", canonical_flame_params.neck)

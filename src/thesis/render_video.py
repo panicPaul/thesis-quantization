@@ -24,7 +24,11 @@ from thesis.audio_feature_processing.wav2vec import (
     process_sequence_interpolation,
 )
 from thesis.code_talker.stage2_runner import Stage2Runner
-from thesis.constants import CANONICAL_FLAME_PARAMS
+from thesis.constants import (
+    CANONICAL_FLAME_PARAMS,
+    DATA_DIR_NERSEMBLE,
+    OTHER_GUY_DATA_DIR,
+)
 from thesis.data_management import (
     SequenceManager,
     UnbatchedFlameParams,
@@ -122,21 +126,6 @@ def audio_to_flame(
             scale=repeat(flame_params.scale.squeeze(0), 'n -> time n', time=n_frames).cuda(),
         )
     return rigging_params, flame_params
-
-
-def load_flame_parameters(sequence: int) -> UnbatchedFlameParams:
-    """
-    Loads flame parameters from a file. This is done to compare the predicted flame parameters
-    with the ground truth.
-
-    Args:
-        sequence: Sequence number.
-
-    Returns:
-        tuple: Tuple containing the expression and jaw parameters.
-    """
-    sm = SequenceManager(sequence)
-    return sm.flame_params[:]
 
 
 def _savgol_1d(data, window_length, poly_order):
@@ -373,13 +362,14 @@ def render_video_dynamic_gaussian_splatting(
 
 
 def render_gt_video(
-        sequence: int,
-        camera: int = 8,
-        output_dir='tmp/gt',
-        trim_size: int = 0,
-        quicktime_compatible: bool = False,
-        mask: bool = False,
-        background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66]),
+    sequence: int,
+    camera: int = 8,
+    output_dir='tmp/gt',
+    trim_size: int = 0,
+    quicktime_compatible: bool = False,
+    mask: bool = False,
+    background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66]),
+    use_other_guy: bool = False,
 ) -> None:
     """
     Renders a video from ground truth flame parameters.
@@ -396,11 +386,17 @@ def render_gt_video(
 
     if mask:
         output_dir = f'{output_dir}/masked'
-    os.makedirs(output_dir, exist_ok=True)
-
     background_color = background_color.cpu().numpy()
+    if use_other_guy:
+        output_dir = os.path.join(output_dir, 'other_guy')
+        data_dir = OTHER_GUY_DATA_DIR
+        fps = 24
+    else:
+        data_dir = DATA_DIR_NERSEMBLE
+        fps = 30
+    os.makedirs(output_dir, exist_ok=True)
     output_path = f'{output_dir}/sequence_{sequence}.mp4'
-    sm = SequenceManager(sequence, cameras=[camera])
+    sm = SequenceManager(sequence, cameras=[camera], data_dir=data_dir)
     audio_path = os.path.join(
         sm.data_dir,
         "sequences",
@@ -411,7 +407,7 @@ def render_gt_video(
     width = sm.image_width
     height = sm.image_height
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, 30, (width, height))
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     for i in tqdm(range(trim_size // 2, len(sm) - trim_size//2), desc='Rendering video'):
         image = sm.images[i][0].numpy() * 255
         image = image.astype(np.uint8)
@@ -435,7 +431,7 @@ def render_gt_video(
     add_audio(  # adds a frame here for some reason in edge cases
         video_path=output_path,
         audio_path=audio_path,
-        fps=30,
+        fps=fps,
         quicktime_compatible=quicktime_compatible,
         trim_to_fit=True,
     )
@@ -477,16 +473,22 @@ def main(
     """
 
     # Set up
-    if flame_params_sequence is not None:
-        sm = SequenceManager(flame_params_sequence)
-        n_frames = sm.flame_params[:].expr.shape[0]
-    else:
-        n_frames = None
-    audio_features = process_audio(audio_path, n_frames)
     splats = DynamicGaussianSplatting.load_from_checkpoint(
         gaussian_splats_checkpoint_path, ckpt_path=gaussian_splats_checkpoint_path)
     splats.eval()
     splats.cuda()
+    if splats.gaussian_splatting_settings.use_other_guy:
+        data_dir = OTHER_GUY_DATA_DIR
+        fps = 24
+    else:
+        data_dir = DATA_DIR_NERSEMBLE
+        fps = 30
+    if flame_params_sequence is not None:
+        sm = SequenceManager(flame_params_sequence, data_dir=data_dir)
+        n_frames = sm.flame_params[:].expr.shape[0]
+    else:
+        n_frames = None
+    audio_features = process_audio(audio_path, n_frames)
     assert (audio_to_flame_checkpoint_path is not None) ^ (flame_params_sequence is not None), \
         "Either provide a checkpoint for audio-to-flame prediction or a sequence number to load " \
         "ground truth flame parameters."
@@ -508,7 +510,11 @@ def main(
         rigging_params, flame_params = audio_to_flame(audio_to_flame_checkpoint_path,
                                                       audio_features)
     else:
-        sm = SequenceManager(flame_params_sequence)
+        if not splats.gaussian_splatting_settings.use_other_guy:
+            data_dir = DATA_DIR_NERSEMBLE
+        else:
+            data_dir = OTHER_GUY_DATA_DIR
+        sm = SequenceManager(flame_params_sequence, data_dir=data_dir)
         flame_params = sm.flame_params[:n_frames]
         flame_params = UnbatchedFlameParams(
             shape=flame_params.shape.cuda(),
@@ -523,7 +529,7 @@ def main(
     # Get SE3 transforms
     if flame_params_sequence is not None:
         se_3_sequence = flame_params_sequence
-    sm = SequenceManager(se_3_sequence)
+    sm = SequenceManager(se_3_sequence, data_dir=data_dir)
     se_3_transforms = sm.se3_transforms[:n_frames]
 
     # Render video
@@ -544,7 +550,7 @@ def main(
     # Save video
     os.makedirs(output_dir, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, 30, (image_width, image_height))
+    out = cv2.VideoWriter(output_path, fourcc, fps, (image_width, image_height))
     for i in tqdm(range(len(video)), desc='Rendering video'):
         image = cv2.cvtColor(video[i], cv2.COLOR_RGB2BGR)
         out.write(image)
@@ -553,7 +559,7 @@ def main(
     add_audio(
         video_path=output_path,
         audio_path=audio_path,
-        fps=30,
+        fps=fps,
         quicktime_compatible=quicktime_compatible,
         trim_to_fit=True,
     )
@@ -567,14 +573,17 @@ if __name__ == '__main__':
     # Arguments
     mode: Literal['flame', 'audio'
                   'gt'] = 'flame'
-    sequence: int | None = 85
+    sequence: int | None = 80
+    use_other_guy = False
+    quicktime_compatible: bool = False
     audio_path: str | None = None  # 'tmp/german_test.m4a'
-    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/other_guy_overnight/version_0/checkpoints/epoch=119-step=800000.ckpt' # noqa
+    gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_limited_data_3-13/version_0/checkpoints/epoch=6-step=240000.ckpt'  # noqa
     # audio_to_flame_checkpoint: str | None = None
     audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/new_baseline_vertex_200/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
-    quicktime_compatible: bool = False
     smoothing_mode: Literal['none', 'gaussian', 'moving_average', 'savgol', 'exponential'] = 'none'
-    background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 0.8
+    background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 1.0
 
     # Parse overridable arguments
     parser = argparse.ArgumentParser()
@@ -608,9 +617,21 @@ if __name__ == '__main__':
             f'sequence_{sequence:04d}/audio/audio_recording.ogg'
         se_3_sequence = sequence
         flame_params_sequence = sequence
+        if use_other_guy:
+            audio_path = f'data/085/sequences/sequence_{sequence:04d}/audio/audio_recording.ogg'
     else:
         se_3_sequence = 10
         flame_params_sequence = None
+    if use_other_guy:
+        world_2_cam = torch.tensor([[-0.8541, -0.1471, -0.4988, 0.0249],
+                                    [-0.3203, 0.9044, 0.2818, -0.0334],
+                                    [0.4097, 0.4005, -0.8196, 1.0361],
+                                    [0.0000, 0.0000, 0.0000, 1.0000]])
+    else:
+        world_2_cam = torch.tensor([[0.9058, -0.2462, -0.3448, -0.0859],
+                                    [-0.0377, -0.8575, 0.5131, 0.1364],
+                                    [-0.4220, -0.4518, -0.7860, 1.0642],
+                                    [0.0000, 0.0000, 0.0000, 1.0000]])
 
     # Render video
     match mode:
@@ -618,11 +639,15 @@ if __name__ == '__main__':
             model = DynamicGaussianSplatting.load_from_checkpoint(
                 gaussian_splats_checkpoint, ckpt_path=gaussian_splats_checkpoint)
             window_size = model.gaussian_splatting_settings.prior_window_size
+            use_other_guy = model.gaussian_splatting_settings.use_other_guy
             render_gt_video(
                 sequence=sequence,
                 trim_size=window_size,
                 mask=True,
                 background_color=background_color,
+                use_other_guy=use_other_guy,
+                output_dir='tmp/gt' if not quicktime_compatible else 'tmp/quicktime/gt',
+                quicktime_compatible=quicktime_compatible,
             )
 
         case 'flame':
@@ -636,6 +661,8 @@ if __name__ == '__main__':
                 quicktime_compatible=quicktime_compatible,
                 smoothing_method=smoothing_mode,
                 background_color=background_color,
+                world_2_cam=world_2_cam,
+                output_dir='tmp/pred' if not quicktime_compatible else 'tmp/quicktime/pred',
             )
 
         case 'audio':
@@ -649,4 +676,6 @@ if __name__ == '__main__':
                 quicktime_compatible=quicktime_compatible,
                 smoothing_method=smoothing_mode,
                 background_color=background_color,
+                world_2_cam=world_2_cam,
+                output_dir='tmp/pred' if not quicktime_compatible else 'tmp/quicktime/pred',
             )

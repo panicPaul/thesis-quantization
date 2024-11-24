@@ -49,8 +49,10 @@ class SequenceManager:
                 masks and intrinsics.
             cameras (list[int]): List of camera IDs to use.
         """
-        if isinstance(sequence, int):
+        if isinstance(sequence, int) and data_dir == DATA_DIR_NERSEMBLE:
             assert sequence in range(3, 102), "Invalid sequence number."
+            sequence = f"sequence_{sequence:04d}"
+        elif isinstance(sequence, int):
             sequence = f"sequence_{sequence:04d}"
         self.id = int(sequence.split("_")[-1])
         # NOTE: not sure if using class variables actually helps with multi threading,

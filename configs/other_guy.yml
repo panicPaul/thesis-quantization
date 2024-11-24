@@ -1,14 +1,17 @@
 
-name: 2dgs_full_res_limited_data_3-13
-# port 53823
+name: other_guy_overnight
+# port 40205
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
 
+  use_other_guy: true
+
   # pre-processing settings
   use_view_dependent_color_mlp: true
   rasterization_mode: 2dgs
-  prior_window_size: 21 # two thirds of a second
+  # prior_window_size: 21 # two thirds of a second
+  prior_window_size: 17 # two thirds of a second
   per_gaussian_motion_adjustment: true
   per_gaussian_motion_adjustment_use_audio: true
   per_gaussian_motion_adjustment_use_flame: false
@@ -34,13 +37,12 @@ gaussian_splatting_settings:
   # densification_mode: default
   refine_start_iteration: 250
 
-  # refine_stop_iteration: 90_000
-  # train_iterations: 100_000
-  # lpips_start_iteration: 35_000
-
-  refine_stop_iteration: 25_000
-  train_iterations: 30_000
-  lpips_start_iteration: 10_000
+  refine_stop_iteration: 90_000
+  train_iterations: 100_000
+  lpips_start_iteration: 35_000
+  # refine_stop_iteration: 25_000
+  # train_iterations: 30_000
+  # lpips_start_iteration: 10_000
 
   cap_max: 500_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
@@ -126,11 +128,11 @@ learning_rates:
 # ---> Random other stuff
 compile: true
 viewer_port: 8080
-train_sequences: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-val_sequences: null
+data_dir: 'data/085'
+train_sequences: [1,2,3,4,5,6,7,8]
+val_sequences: [9,10]
 frame: 42
 num_train_workers: 12
 num_val_workers: 4
 tensorboard_dir: logs
 enable_viewer: true
-data_dir: null

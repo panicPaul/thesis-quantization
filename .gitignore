@@ -9,7 +9,7 @@ sound_input/*
 tmp
 tb_logs
 assets/pointcloud_s03_f218.pcd
-
+data
 
 # ------------ General Python ------------
 # Byte-compiled / optimized / DLL files

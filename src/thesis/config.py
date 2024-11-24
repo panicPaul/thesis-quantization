@@ -173,6 +173,7 @@ class DynamicGaussianSplattingSettings:
     shuffle_train_data: bool = True
     lpips_start_iteration: int = 10_000  # don't start lpips loss until this iteration
     image_downsampling_factor: float = 1.0
+    use_other_guy: bool = False
 
 
 def load_config(path: str, mode: Literal['default', 'dynamic']) -> DictConfig:
