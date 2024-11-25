@@ -69,5 +69,5 @@ dependencies = [
     'open3d',
     'torch_geometric',
     'yapf',
-
+    'kaleido',
     ]

@@ -12,7 +12,7 @@ from thesis.code_talker.models.lib.base_models import (
     Transformer,
 )
 from thesis.code_talker.models.lib.quantizer import VectorQuantizer
-from thesis.data_management import FlameParams
+from thesis.flame import FlameHeadWithInnerMouth
 
 
 class BottleNeck(nn.Module):
@@ -118,8 +118,6 @@ class VQAutoEncoder(nn.Module):
     def __init__(
         self,
         n_vertices: int,
-        use_flame_code: bool,
-        flame_code_head: bool,
         hidden_size: int,
         num_hidden_layers: int,
         num_attention_heads: int,
@@ -133,18 +131,28 @@ class VQAutoEncoder(nn.Module):
         is_audio=False,
         quantization_mode: Literal['default', 'fsq', 'bottleneck'] = 'default',
         disable_neck: bool = False,
+        flame_mode: Literal['flame', 'vertex'] = 'flame',
+        use_audio: bool = False,
     ):
         super().__init__()
         self.disable_neck = disable_neck
         self.code_dim = code_dim
         self.face_quan_num = face_quan_num
-        self.n_vertices = n_vertices
-        self.use_flame_code = use_flame_code
-        # 300 shape, 100 expr, 3 neck, 3 jaw, 6 eye, 1 scale
-        input_dim = n_vertices * 3 if not use_flame_code else 413
+
+        if flame_mode == 'flame':
+            input_dim = 103
+        else:
+            input_dim = n_vertices * 3
+        if use_audio:
+            input_dim += 1024
         self.input_dim = input_dim
+        self.n_vertices = n_vertices
+        self.use_audio = use_audio
+        self.flame_mode = flame_mode
+
         self.encoder = TransformerEncoder(
             input_dim=input_dim,
+            output_dim=code_dim * face_quan_num,
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
@@ -154,6 +162,7 @@ class VQAutoEncoder(nn.Module):
             instance_normalization_affine=instance_normalization_affine,
         )
         self.decoder = TransformerDecoder(
+            input_dim=code_dim * face_quan_num,
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
@@ -167,6 +176,7 @@ class VQAutoEncoder(nn.Module):
         self.face_quan_num = face_quan_num  # h in the paper
         match quantization_mode:
             case 'default':
+                # n_embed is codebook size
                 self.quantize = VectorQuantizer(n_embed, code_dim, beta=0.25)
             case 'fsq':
                 self.quantize = FSQWrapper(latent_dim=code_dim, levels=[face_quan_num])
@@ -175,21 +185,11 @@ class VQAutoEncoder(nn.Module):
             case _:
                 raise ValueError(f"Invalid quantization mode: {quantization_mode}")
 
-        if flame_code_head:
-            assert not use_flame_code, "Cannot use both flame code and flame code head"
-            self.flame_code_head = nn.Sequential(
-                nn.Linear(input_dim, 1024),
-                nn.SiLU(),
-                nn.Linear(1024, 512),
-                nn.SiLU(),
-                nn.Linear(512, 512),
-                nn.SiLU(),
-                nn.Linear(512, 413),
-            )
-
     def encode(
-        self, x: Float[torch.Tensor, "batch time n_vertices 3"]
-        | Float[torch.Tensor, "batch time flame_dim"]
+        self,
+        vertices: Float[torch.Tensor, "batch time n_vertices 3"] | None = None,
+        flame_code: Float[torch.Tensor, "batch time 103"] | None = None,
+        audio: Float[torch.Tensor, "batch time 1024"] | None = None,
     ) -> tuple[
             Float[torch.Tensor, "batch code_dim th"],
             Float[torch.Tensor, ""],
@@ -206,11 +206,14 @@ class VQAutoEncoder(nn.Module):
                 - emb_loss (torch.Tensor): embedding loss
                 - info (tuple): additional information
         """
-        if not self.use_flame_code:
-            batch_size, time, n_vertices, _ = x.shape
-            x = x.view(batch_size, time, -1)
+        if self.flame_mode == 'vertex':
+            batch_size, time, _, _ = vertices.shape
+            x = vertices.view(batch_size, time, -1)
         else:
-            batch_size, time, _ = x.shape
+            batch_size, time, _ = flame_code.shape
+            x = flame_code
+        if self.use_audio:
+            x = torch.cat([x, audio], dim=-1)
         h = self.encoder(x)  # x --> z'
         h = h.view(batch_size, time, self.face_quan_num, self.code_dim)  # (b, t, h, c)
         h = h.view(batch_size, time * self.face_quan_num, self.code_dim)  # (b, t*h, c)
@@ -220,15 +223,22 @@ class VQAutoEncoder(nn.Module):
     def decode(
         self,
         quant: Float[torch.Tensor, "batch code_dim th"],
-    ) -> Float[torch.Tensor, "batch time n_vertices 3"] | Float[torch.Tensor,
-                                                                "batch time flame_dim"]:
+    ) -> tuple[
+            Float[torch.Tensor, "batch time n_vertices 3"] | None,
+            Float[torch.Tensor, "batch time 103"] | None,
+            Float[torch.Tensor, "batch time 1024"] | None,
+    ]:
         """
         Args:
             quant (torch.Tensor): quantized representation of the input tensor.
                 Shape is (batch, code_dim, time * n_face_regions)
 
         Returns:
-            torch.Tensor: reconstructed tensor of shape (batch, time, n_vertices, 3)
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: tuple containing:
+                - vertex_dec (torch.Tensor): reconstructed tensor of shape
+                    (batch, time, n_vertices, 3)
+                - flame_dec (torch.Tensor): reconstructed tensor of shape (batch, time, 103)
+                - audio_dec (torch.Tensor): reconstructed tensor of shape (batch, time, 1024)
         """
         # BCL
         batch_size, code_dim, ht = quant.shape
@@ -237,76 +247,62 @@ class VQAutoEncoder(nn.Module):
         quant = quant.view(batch_size, -1, self.face_quan_num * self.code_dim).contiguous()
         quant = quant.permute(0, 2, 1).contiguous()
         dec = self.decoder(quant)  # z' --> x
-        if not self.use_flame_code:
-            dec = dec.view(batch_size, -1, self.n_vertices, 3)
-            return dec * 1e-3
+
+        if self.use_audio:
+            vertex_dec = dec[:, :, :-1024]
+            audio_dec = dec[:, :, -1024:]
         else:
-            dec = dec.view(batch_size, -1, 413)
-            shape = dec[..., :300] * 1e-4
-            expr = dec[..., 300:400] * 1e-2
-            neck = dec[..., 400:403] * 1e-2 if not self.disable_neck else torch.zeros_like(
-                dec[..., 400:403])
-            jaw = dec[..., 403:406] * 1e-2
-            eye = dec[..., 406:412] * 1e-3
-            scale = dec[..., 412:413] * 1e-4
-            dec = torch.cat([shape, expr, neck, jaw, eye, scale], dim=-1)
-            return dec
+            vertex_dec = dec
+            audio_dec = None
 
-    def flame_head_forward(
-            self, vertices: Float[torch.Tensor, "batch time n_vertices 3"]) -> FlameParams:
-        """
-        Computes the flame code based on the input vertices.
+        if self.flame_mode == 'flame':
+            flame_dec = vertex_dec.view(batch_size, -1, 103) * 1e-2
+            vertex_dec = None
+        else:
+            vertex_dec = vertex_dec.view(batch_size, -1, self.n_vertices, 3) * 1e-3
+            flame_dec = None
 
-        Args:
-            vertices (torch.Tensor): input tensor of shape (batch, time, n_vertices, 3)
-
-        Returns:
-            FlameParams: flame code
-        """
-        vertices = vertices.view(vertices.shape[0], vertices.shape[1], -1)
-        x = self.flame_code_head.forward(vertices)
-        shape = x[..., :300]
-        expr = x[..., 300:400]
-        neck = x[..., 400:403] if not self.disable_neck else torch.zeros_like(x[..., 400:403])
-        jaw = x[..., 403:406]
-        eye = x[..., 406:412]
-        scale = x[..., 412:413]
-        return FlameParams(shape=shape, expr=expr, neck=neck, jaw=jaw, eye=eye, scale=scale)
+        return vertex_dec, flame_dec, audio_dec
 
     def forward(
         self,
-        x: Float[torch.Tensor, "batch time n_vertices 3"]
-        | Float[torch.Tensor, "batch time flame_dim"],
-        template: Float[torch.Tensor, "batch n_vertices 3"]
-        | Float[torch.Tensor, "batch flame_dim"],
+        template: Float[torch.Tensor, "batch n_vertices 3"],
+        vertices: Float[torch.Tensor, "batch time n_vertices 3"] | None = None,
+        flame_code: Float[torch.Tensor, "batch time 103"] | None = None,
+        audio_features: Float[torch.Tensor, "batch time 1024"] | None = None,
     ) -> tuple[
-            Float[torch.Tensor, "batch time n_vertices 3"] | Float[torch.Tensor,
-                                                                   "batch time flame_dim"],
+            Float[torch.Tensor, "batch time n_vertices 3"] | None,
+            Float[torch.Tensor, "batch time 103"] | None,
+            Float[torch.Tensor, "batch time 1024"] | None,
             Float[torch.Tensor, ""],
             tuple,
     ]:
         """
         Args:
-            x (torch.Tensor): input tensor of shape (batch, time, c_in) where c_in is the flattened
-                vertex coordinates, i.e. V*3 or flame_dim
+            vertices (torch.Tensor): input tensor of shape (batch, time, n_vertices, 3)
+            flame_code (torch.Tensor): input tensor of shape (batch, time, 103)
+            audio_features (torch.Tensor): input tensor of shape (batch, time, 1024)
             template (torch.Tensor): template tensor of shape (batch, c_in) where c_in is the
-                flattened vertex coordinates, i.e. V*3 or flame_dim
+                flattened vertex coordinates, i.e. V*3
 
         Returns:
             tuple[torch.Tensor, torch.Tensor, tuple]: tuple containing:
-                - dec (torch.Tensor): reconstructed tensor of shape (batch, time, c_in) where c_in
-                    is the flattened vertex coordinates, i.e. V*3
+                - dec_vertices (torch.Tensor): reconstructed tensor of shape
+                    (batch, time, n_vertices, 3)
+                - dec_flame (torch.Tensor): reconstructed tensor of shape (batch, time, 103)
+                - dec_audio (torch.Tensor): reconstructed tensor of shape (batch, time, 1024)
                 - emb_loss (torch.Tensor): embedding loss
                 - info (tuple): additional information
         """
-        template = template.unsqueeze(1)  # (b, 1, v, 3) or (b, 1, f)
-        x = x - template  # (b, t, v, 3) or (b, t, f)
+        template = template.unsqueeze(1)  # (b, 1, v, 3)
+        vertices = vertices - template  # (b, t, v, 3)
 
-        quant, emb_loss, info = self.encode(x)  # (b, c, t*h)
-        dec = self.decode(quant)  # (b, t, v, 3) or
+        quant, emb_loss, info = self.encode(vertices, flame_code, audio_features)  # (b, c, t*h)
+        dec_vertices, dec_flame_code, dec_audio = self.decode(quant)  # (b, t, v, 3)
 
-        dec = dec + template
-        return dec, emb_loss, info
+        if dec_vertices is not None:
+            dec_vertices = dec_vertices + template
+        return dec_vertices, dec_flame_code, dec_audio, emb_loss, info
 
     def sample_step(self, x, x_a=None):
         quant_z, _, info = self.encode(x, x_a)
@@ -390,6 +386,7 @@ class TransformerEncoder(nn.Module):
     def __init__(
         self,
         input_dim: int,
+        output_dim: int,
         hidden_size: int,
         num_hidden_layers: int,
         num_attention_heads: int,
@@ -436,6 +433,7 @@ class TransformerEncoder(nn.Module):
         )
         self.encoder_pos_embedding = PositionalEncoding(hidden_size)
         self.encoder_linear_embedding = LinearEmbedding(hidden_size, hidden_size)
+        self.output_projection = nn.Linear(hidden_size, output_dim)
 
     def forward(self, inputs):
         # downsample into path-wise length seq before passing into transformer
@@ -446,6 +444,7 @@ class TransformerEncoder(nn.Module):
         encoder_features = self.encoder_linear_embedding(inputs)
         encoder_features = self.encoder_pos_embedding(encoder_features)
         encoder_features = self.encoder_transformer((encoder_features, dummy_mask))
+        encoder_features = self.output_projection(encoder_features)
 
         return encoder_features
 
@@ -455,6 +454,7 @@ class TransformerDecoder(nn.Module):
 
     def __init__(
         self,
+        input_dim: int,
         hidden_size: int,
         num_hidden_layers: int,
         num_attention_heads: int,
@@ -508,10 +508,14 @@ class TransformerDecoder(nn.Module):
         self.decoder_linear_embedding = LinearEmbedding(hidden_size, hidden_size)
 
         self.vertices_map_reverse = nn.Linear(hidden_size, out_dim)
+        self.input_projection = nn.Linear(input_dim, hidden_size)
 
     def forward(self, inputs):
         dummy_mask = {'max_mask': None, 'mask_index': -1, 'mask': None}
         # upsample into original length seq before passing into transformer
+        inputs = inputs.permute(0, 2, 1)  # BCL -> BLC
+        inputs = self.input_projection(inputs)
+        inputs = inputs.permute(0, 2, 1)  # BLC -> BCL
         for i, module in enumerate(self.expander):
             inputs = module(inputs)
             if i > 0:
@@ -522,5 +526,4 @@ class TransformerDecoder(nn.Module):
 
         decoder_features = self.decoder_transformer((decoder_features, dummy_mask))
         pred_recon = self.vertices_map_reverse(decoder_features)
-        return pred_recon
         return pred_recon

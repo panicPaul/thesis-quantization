@@ -1,16 +1,18 @@
 # Config for the VQ-VAE model
-name: new_baseline_vertex_200
+name: new_flame_driven
 
 model:
   quantization_mode: default
   disable_neck: true
   n_vertices: 5443
-  use_flame_code: false
-  flame_code_head: false
+  face_quan_num: 1
+  flame_mode: flame
+  use_audio: false
 
 
 training:
   epochs: 200
   base_lr: 0.0001
+  use_other_guy: false
 
 compile: false

@@ -1,13 +1,17 @@
 # audio to vertices prediction
 
-name: new_baseline_vertex_200
+name: new_flame_driven
 
 model:
-  # vq_vae_pretrained_path: tb_logs/vector_quantization/default_flame/version_0/checkpoints/epoch=199-step=15400.ckpt
-  # vq_vae_pretrained_path: tb_logs/vector_quantization/default_flame/version_1/checkpoints/epoch=199-step=15400.ckpt
-  # vq_vae_pretrained_path: tb_logs/vector_quantization/default_flame_vertex_loss/version_2/checkpoints/epoch=199-step=15400.ckpt
-  # vq_vae_pretrained_path: tb_logs/vector_quantization/final_baseline_l2/version_0/checkpoints/epoch=199-step=15400.ckpt
-  vq_vae_pretrained_path: tb_logs/vector_quantization/new_baseline_vertex_200/version_0/checkpoints/epoch=199-step=15400.ckpt
-training: {}
+  vq_vae_pretrained_path: tb_logs/vector_quantization/new_flame_driven/version_0/checkpoints/epoch=199-step=15400.ckpt
+  feature_dim: 1024
+  num_layers: 3
+
+training:
+  epochs: 100
+  base_lr: 1e-5
 
 compile: False
+
+# maybe add another lip specific loss
+# maybe add windowed sub sampling

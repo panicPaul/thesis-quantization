@@ -1,12 +1,12 @@
 
-# Loop through sequences [6 ... 10], + [85 ... 101) and render the videos
-for seq in {6..10}; do
+# Loop through sequences [3 ... 5], + [11 ... 84] and render the videos
+for seq in {3..5}; do
     echo "Processing sequence $seq..."
     python src/thesis/render_video.py --sequence=$seq
     echo "--------------------------------------------"
     echo ""
 done
-for seq in {85..101}; do
+for seq in {11..84}; do
     echo "Processing sequence $seq..."
     python src/thesis/render_video.py --sequence=$seq
     echo "--------------------------------------------"

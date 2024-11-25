@@ -37,7 +37,7 @@ from thesis.data_management import (
 from thesis.flame import FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.dynamic_model import DynamicGaussianSplatting
 from thesis.utils import assign_segmentation_class
-from thesis.video_utils import add_audio
+from thesis.video_utils import add_audio, get_camera_path, get_camera_path_circle
 
 
 @torch.no_grad()
@@ -86,7 +86,10 @@ def process_audio(
         device='cuda',
     )
     print("\tDone!")
-
+    # delete the model to free up memory
+    del processor
+    del wav2vec_model
+    torch.cuda.empty_cache()
     return audio_features
 
 
@@ -125,6 +128,9 @@ def audio_to_flame(
                 repeat(flame_params.eye.squeeze(0), 'n -> time n', time=n_frames).cuda()),
             scale=repeat(flame_params.scale.squeeze(0), 'n -> time n', time=n_frames).cuda(),
         )
+    # delete the model to free up memory
+    del runner
+    torch.cuda.empty_cache()
     return rigging_params, flame_params
 
 
@@ -455,7 +461,8 @@ def main(
          [-0.4220, -0.4518, -0.7860, 1.0642], [0.0000, 0.0000, 0.0000, 1.0000]]),
     image_height: int = 1604,
     image_width: int = 1100,
-    background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66])
+    background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66]),
+    n_frames_override: int | None = None,
 ) -> None:
     """
     Renders a video from audio.
@@ -488,13 +495,19 @@ def main(
         n_frames = sm.flame_params[:].expr.shape[0]
     else:
         n_frames = None
+    if n_frames_override is not None:
+        n_frames = n_frames_override
     audio_features = process_audio(audio_path, n_frames)
     assert (audio_to_flame_checkpoint_path is not None) ^ (flame_params_sequence is not None), \
         "Either provide a checkpoint for audio-to-flame prediction or a sequence number to load " \
         "ground truth flame parameters."
     try:
-        name = f'sequence_{sequence}' if flame_params_sequence is not None else audio_path.split(
-            '/')[-3]
+        if flame_params_sequence is not None:
+            name = f'sequence_{flame_params_sequence}'
+        else:
+            sequence = audio_path.split('/')[-3]
+            sequence = int(sequence.split('_')[-1])
+            name = f'sequence_{sequence}'
     except IndexError:
         name = audio_path.split('/')[-1].split('.')[0]
     output_dir = f'{output_dir}/{splats.name}/{mode}'
@@ -551,7 +564,7 @@ def main(
     os.makedirs(output_dir, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (image_width, image_height))
-    for i in tqdm(range(len(video)), desc='Rendering video'):
+    for i in tqdm(range(video.shape[0]), desc='Rendering video'):
         image = cv2.cvtColor(video[i], cv2.COLOR_RGB2BGR)
         out.write(image)
 
@@ -572,16 +585,17 @@ def main(
 if __name__ == '__main__':
     # Arguments
     mode: Literal['flame', 'audio'
-                  'gt'] = 'flame'
-    sequence: int | None = 80
+                  'gt'] = 'audio'
+    sequence: int | None = 5
     use_other_guy = False
     quicktime_compatible: bool = False
     audio_path: str | None = None  # 'tmp/german_test.m4a'
-    # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
     # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/other_guy_overnight/version_0/checkpoints/epoch=119-step=800000.ckpt' # noqa
-    gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_limited_data_3-13/version_0/checkpoints/epoch=6-step=240000.ckpt'  # noqa
+    # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_limited_data_3-13/version_0/checkpoints/epoch=6-step=240000.ckpt'  # noqa
     # audio_to_flame_checkpoint: str | None = None
-    audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/new_baseline_vertex_200/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
+    # audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/reverting_baseline/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
+    audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/audio_vqvae/version_1/checkpoints/epoch=99-step=7700.ckpt'
     smoothing_mode: Literal['none', 'gaussian', 'moving_average', 'savgol', 'exponential'] = 'none'
     background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 1.0
 
@@ -612,6 +626,13 @@ if __name__ == '__main__':
         smoothing_mode = args.smoothing_mode
 
     # Processing
+    if audio_path is None:
+        # it's not precisely 30fps, and not constant either so this is a hack to align frames
+        data_dir = DATA_DIR_NERSEMBLE if not use_other_guy else OTHER_GUY_DATA_DIR
+        sm = SequenceManager(sequence, data_dir=data_dir)
+        n_frames = len(sm)
+    else:
+        n_frames = None
     if sequence is not None:
         audio_path = '../new_master_thesis/data/nersemble/Paul-audio-856/856/sequences/' \
             f'sequence_{sequence:04d}/audio/audio_recording.ogg'
@@ -632,6 +653,10 @@ if __name__ == '__main__':
                                     [-0.0377, -0.8575, 0.5131, 0.1364],
                                     [-0.4220, -0.4518, -0.7860, 1.0642],
                                     [0.0000, 0.0000, 0.0000, 1.0000]])
+
+    if False:
+        # world_2_cam = get_camera_path(n_frames)
+        world_2_cam = get_camera_path_circle(n_frames)
 
     # Render video
     match mode:
@@ -678,4 +703,8 @@ if __name__ == '__main__':
                 background_color=background_color,
                 world_2_cam=world_2_cam,
                 output_dir='tmp/pred' if not quicktime_compatible else 'tmp/quicktime/pred',
+                n_frames_override=n_frames,
             )
+
+        case _:
+            raise ValueError("Mode must be one of: 'flame', 'audio', 'gt'")

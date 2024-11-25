@@ -1,5 +1,6 @@
 """ Video utilities for thesis project. """
 
+import math
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -11,10 +12,14 @@ import numpy as np
 import pydub
 import soundfile as sf
 import torch
+from dreifus.trajectory import circle_around_axis
+from dreifus.vector import Vec3
 from jaxtyping import Float, Int, UInt8
 from moviepy.editor import AudioFileClip, VideoFileClip, clips_array
 
 from thesis.audio_feature_processing.audio_cleaning import pydub_to_np
+from thesis.data_management import SequenceManager
+from thesis.nerfstudio_camera_utils import get_interpolated_poses
 
 
 def add_audio(
@@ -372,3 +377,106 @@ def get_audio_path(sequence: int) -> str:
     audio_path = '../new_master_thesis/data/nersemble/Paul-audio-856/856/sequences/' \
         f'sequence_{sequence:04d}/audio/audio_recording.ogg'
     return audio_path
+
+
+def get_full_camera_path(n_frames_between_cameras: int) -> Float[torch.Tensor, 'n_frames 4 4']:
+    """
+    Interpolates between the cameras and returns the world_to_camera matrices.
+
+    Args:
+        n_frames: Number of frames to interpolate
+
+    Returns:
+        The world_to_camera matrices. Shape (16 * n_frames, 4, 4)
+    """
+
+    # Load the camera poses
+    sm = SequenceManager(3, cameras=list(range(16)))
+    world_2_cam = sm.cameras[1]
+
+    # sort serials and world_2_cam by serial
+    world_2_cam = np.stack(world_2_cam)
+
+    # get cam_2_world matrices
+    cam_2_world = np.zeros_like(world_2_cam)
+    cam_2_world[:, :3, :3] = world_2_cam[:, :3, :3].transpose(0, 2, 1)
+    cam_2_world[:, :3, 3] = (-world_2_cam[:, :3, :3].transpose(0, 2, 1)
+                             @ world_2_cam[:, :3, 3].reshape(-1, 3, 1)).reshape(-1, 3)
+    cam_2_world[:, 3, 3] = 1.0
+
+    # Interpolate the camera poses
+    positions = []
+    # 14 is odd
+    order = [0, 2, 4, 6, 8, 10, 12, 13, 11, 9, 7, 5, 3, 1]
+    # order = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    for i in range(len(order)):
+        positions.append(
+            get_interpolated_poses(
+                cam_2_world[order[i]],
+                cam_2_world[order[(i+1) % len(order)]],
+                n_frames_between_cameras,
+            ))
+
+    positions = torch.from_numpy(np.concatenate(positions, axis=0)).float()
+    last_row = torch.tensor([0.0, 0.0, 0.0, 1.0]).reshape(1, 1, 4)
+    last_row = last_row.repeat(positions.shape[0], 1, 1)
+    cam_2_world = torch.cat([positions, last_row], dim=1)
+
+    # Invert again
+    world_2_cam = torch.zeros_like(cam_2_world)
+    world_2_cam[:, :3, :3] = cam_2_world[:, :3, :3].transpose(1, 2)
+    world_2_cam[:, :3, 3] = (-cam_2_world[:, :3, :3].transpose(1, 2)
+                             @ cam_2_world[:, :3, 3].reshape(-1, 3, 1)).reshape(-1, 3)
+    world_2_cam[:, 3, 3] = 1.0
+
+    return world_2_cam
+
+
+def get_camera_path(
+    total_frames: int,
+    frames_between_cameras: int = 15,
+) -> Float[torch.Tensor, 'n_frames 4 4']:
+    """
+    Interpolates between the cameras and returns the world_to_camera matrices.
+
+    Args:
+        total_frames: Total number of frames
+        frames_between_cameras: Number of frames between each camera change
+
+    Returns:
+        The world_to_camera matrices. Shape (total_frames, 4, 4)
+    """
+
+    full_path = get_full_camera_path(frames_between_cameras)
+    n_frames = full_path.shape[0]
+    n_repeats = math.ceil(total_frames / n_frames)
+    camera_path = full_path.repeat(n_repeats, 1, 1)
+    camera_path = camera_path[:total_frames]
+    return camera_path
+
+
+def get_camera_path_circle(total_frames: int) -> Float[torch.Tensor, 'n_frames 4 4']:
+    """
+    Interpolates between the cameras and returns the world_to_camera matrices.
+
+    Args:
+        total_frames: Total number of frames
+        frames_between_cameras: Number of frames between each camera change
+
+    Returns:
+        The world_to_camera matrices. Shape (total_frames, 4, 4)
+    """
+    cam_2_world = circle_around_axis(
+        total_frames,
+        axis=Vec3(0, 0, -1),
+        up=Vec3(0, -1, 0),  # TODO: probably inverted...
+        move=Vec3(0, 0, 1),
+        distance=0.3,
+    )
+    cam_2_world = np.array(cam_2_world)
+    world_2_cam = np.zeros_like(cam_2_world)
+    world_2_cam[:, :3, :3] = cam_2_world[:, :3, :3].transpose(0, 2, 1)
+    world_2_cam[:, :3, 3] = (-cam_2_world[:, :3, :3].transpose(0, 2, 1)
+                             @ cam_2_world[:, :3, 3].reshape(-1, 3, 1)).reshape(-1, 3)
+    world_2_cam[:, 3, 3] = 1.0
+    return torch.from_numpy(world_2_cam).float()

@@ -5,6 +5,7 @@ import argparse
 import lightning as pl
 import torch
 import torch.nn as nn
+from einops import repeat
 from jaxtyping import Float
 from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import OmegaConf
@@ -16,8 +17,13 @@ from thesis.code_talker.models.code_talker_config import (
     QuantizerConfig,
 )
 from thesis.code_talker.models.stage1_nersemble import VQAutoEncoder
-from thesis.code_talker.utils import flame_code_to_params, flame_params_to_code
-from thesis.constants import CANONICAL_FLAME_PARAMS, TEST_SEQUENCES, TRAIN_SEQUENCES
+from thesis.constants import (
+    CANONICAL_FLAME_PARAMS,
+    DATA_DIR_NERSEMBLE,
+    OTHER_GUY_DATA_DIR,
+    TEST_SEQUENCES,
+    TRAIN_SEQUENCES,
+)
 from thesis.data_management import (
     FlameParams,
     QuantizationDataset,
@@ -57,10 +63,16 @@ class Stage1Runner(pl.LightningModule):
                 eye=canonical_flame_params.eye,
                 scale=canonical_flame_params.scale,
             )
+        self.canonical_flame_params = UnbatchedFlameParams(
+            shape=canonical_flame_params.shape.cuda(),
+            expr=canonical_flame_params.expr.cuda(),
+            neck=canonical_flame_params.neck.cuda(),
+            jaw=canonical_flame_params.jaw.cuda(),
+            eye=canonical_flame_params.eye.cuda(),
+            scale=canonical_flame_params.scale.cuda(),
+        )
         canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)  # (1, v, 3)
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
-        self.register_buffer("canonical_flame_code", flame_params_to_code(canonical_flame_params))
-        self.flame_loss_weight = 1e-2
 
     def configure_optimizers(self):
         """ Configures the optimizers and schedulers. """
@@ -75,85 +87,118 @@ class Stage1Runner(pl.LightningModule):
         return [optimizer], [scheduler]
 
     # TODO: experiment with predicting flame vertices directly
-    def calc_vq_loss(self, pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
+    def calc_vq_loss(self,
+                     pred_vertices,
+                     pred_flame_code,
+                     pred_audio,
+                     target_vertices,
+                     target_flame_params,
+                     target_audio,
+                     quant_loss,
+                     quant_loss_weight=1.0,
+                     audio_loss_weight=1e-3,
+                     alpha=1.0):
         """ function that computes the various components of the VQ loss """
+        loss = torch.tensor(0.0, device=target_vertices.device)
+        losses = {}
+        match self.config.flame_mode:
+            case 'flame':
+                target_flame_code = torch.cat([target_flame_params.expr, target_flame_params.jaw],
+                                              dim=-1)
+                flame_code_loss = nn.functional.l1_loss(pred_flame_code, target_flame_code)
+                loss = loss + flame_code_loss*1e-3
+                losses['flame_code_loss'] = flame_code_loss
+                flame_params = FlameParams(
+                    shape=target_flame_params.shape,
+                    expr=pred_flame_code[:, :, :100],
+                    neck=target_flame_params.neck,
+                    jaw=pred_flame_code[:, :, 100:103],
+                    eye=target_flame_params.eye,
+                    scale=target_flame_params.scale,
+                )
+                pred_vertices = self.flame_head.forward(flame_params)
+                vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
+                loss = loss + vertex_loss
+                losses['vertex_loss'] = vertex_loss
+            case 'vertex':
+                vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
+                loss = loss + vertex_loss
+                losses['vertex_loss'] = vertex_loss
+            case _:
+                raise ValueError(f"Invalid flame mode: {self.config.flame_mode}")
+        if self.config.use_audio:
+            audio_rec_loss = nn.functional.l1_loss(pred_audio, target_audio)
+            loss = loss + audio_loss_weight*audio_rec_loss
+            losses['audio_loss'] = audio_rec_loss
 
-        if not self.config.use_flame_code:
-            rec_loss = nn.functional.l1_loss(pred, target)
-            # rec_loss = nn.functional.mse_loss(pred, target)
-            flame_loss = None
-            vertex_loss = rec_loss
-        else:
-            flame_loss = nn.functional.mse_loss(pred, target)
-            pred_params = flame_code_to_params(pred)
-            target_params = flame_code_to_params(target)
-            pred_vertices = self.flame_head.forward(pred_params)
-            target_vertices = self.flame_head.forward(target_params)
-            vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
-            # vertex_loss = nn.functional.mse_loss(pred_vertices, target_vertices)
-            # TODO: add weights here, log both losses!
-            rec_loss = vertex_loss + flame_loss * self.flame_loss_weight
-
-        # loss is VQ reconstruction + weighted pre-computed quantization loss
-        quant_loss = quant_loss.mean()
-        return quant_loss*quant_loss_weight + rec_loss, [
-            rec_loss, quant_loss, flame_loss, vertex_loss
-        ]
+        loss = quant_loss*quant_loss_weight + loss
+        losses['quant_loss'] = quant_loss
+        return loss, losses
 
     def training_step(self, batch, batch_idx):
         """ Training step for the model. """
         # set up
-        flame_params, _, _ = batch
+        flame_params, _, audio_features = batch
         flame_params = FlameParams(*flame_params)
         if self.config.disable_neck:
             flame_params = FlameParams(
-                shape=flame_params.shape,
-                expr=flame_params.expr,
-                neck=torch.zeros_like(flame_params.neck),
-                jaw=flame_params.jaw,
-                eye=flame_params.eye,
-                scale=flame_params.scale,
+                shape=flame_params.shape.cuda(),
+                expr=flame_params.expr.cuda(),
+                neck=torch.zeros_like(flame_params.neck).cuda(),
+                jaw=flame_params.jaw.cuda(),
+                eye=flame_params.eye.cuda(),
+                scale=flame_params.scale.cuda(),
             )
-        if self.config.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_code.repeat(batch_size, 1)  # (b, c)
-        else:
-            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
+        flame_code = torch.cat([flame_params.expr, flame_params.jaw], dim=-1)
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        batch_size = flame_vertices.shape[0]
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
+
+        # sub sampling
+        min_size = 45
+        max_size = flame_vertices.shape[1]
+        size = torch.randint(min_size, max_size, (1,)).item()
+        start_idx = torch.randint(0, max_size - size, (1,)).item()
+        flame_vertices = flame_vertices[:, start_idx:start_idx + size]
+        audio_features = audio_features[:, start_idx:start_idx + size]
+        flame_code = flame_code[:, start_idx:start_idx + size]
+        flame_params = FlameParams(
+            shape=flame_params.shape[:, start_idx:start_idx + size],
+            expr=flame_params.expr[:, start_idx:start_idx + size],
+            neck=flame_params.neck[:, start_idx:start_idx + size],
+            jaw=flame_params.jaw[:, start_idx:start_idx + size],
+            eye=flame_params.eye[:, start_idx:start_idx + size],
+            scale=flame_params.scale[:, start_idx:start_idx + size],
+        )
+
+        # audio masking
+        audio_features_in = nn.functional.dropout(audio_features, p=0.5)
 
         # forward pass
-        rec, quant_loss, info = self.model.forward(x, template)
-        loss, losses = self.calc_vq_loss(rec, x, quant_loss)
-
-        # flame head
-        if self.config.flame_code_head:
-            rec_flame_params = self.model.flame_head_forward(rec)
-            rec_flame_code = flame_params_to_code(rec_flame_params)
-            gt_flame_code = flame_params_to_code(flame_params)
-            flame_loss = nn.functional.mse_loss(rec_flame_code, gt_flame_code)
-            self.log('train/flame_loss', flame_loss, on_step=False, on_epoch=True, prog_bar=False)
-            loss = loss + flame_loss * self.flame_loss_weight
+        rec_vertices, rec_flame_code, rec_audio, quant_loss, info = self.model.forward(
+            template=template,
+            vertices=flame_vertices,
+            flame_code=flame_code,
+            audio_features=audio_features_in,
+        )
+        loss, losses = self.calc_vq_loss(
+            pred_vertices=rec_vertices,
+            pred_flame_code=rec_flame_code,
+            pred_audio=rec_audio,
+            target_vertices=flame_vertices,
+            target_flame_params=flame_params,
+            target_audio=audio_features,
+            quant_loss=quant_loss,
+        )
 
         # logging
-        self.log('train/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log('train/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[2] is not None:
-            self.log('train/flame_loss', losses[2], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[3] is not None:
-            self.log('train/vertex_loss', losses[3], on_step=False, on_epoch=True, prog_bar=False)
+        for k, v in losses.items():
+            self.log(f"train/{k}", v, on_step=False, on_epoch=True, prog_bar=True)
 
         # log reconstructed picture
-        if self.global_step % 250 == 0:
-            if self.config.use_flame_code:
-                x = flame_code_to_params(rec)
-                x = self.flame_head.forward(x)[0][0]  # (v, 3)
-            else:
-                x = rec[0][0]  # (v, 3)
+        if self.global_step % 250 == 0 and self.config.flame_mode == 'vertex':
             img = render_mesh_image(
-                vertex_positions=x,
+                vertex_positions=rec_vertices[0][0],  # (v, 3)
                 faces=self.flame_head.faces,
             )
             self.logger.experiment.add_image(
@@ -164,7 +209,7 @@ class Stage1Runner(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         """ Validation step for the model. """
         # set up
-        flame_params, _, _ = batch
+        flame_params, _, audio_features = batch
         flame_params = FlameParams(*flame_params)
         if self.config.disable_neck:
             flame_params = FlameParams(
@@ -175,37 +220,31 @@ class Stage1Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-
-        if self.config.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_code.repeat(batch_size, 1)
-        else:
-            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        flame_code = torch.cat([flame_params.expr, flame_params.jaw], dim=-1)
+        batch_size = flame_vertices.shape[0]
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
 
         # forward pass
-        rec, quant_loss, info = self.model.forward(x, template)
-        loss, losses = self.calc_vq_loss(rec, x, quant_loss)
+        rec_vertices, rec_flame_code, rec_audio, quant_loss, info = self.model.forward(
+            template=template,
+            vertices=flame_vertices,
+            flame_code=flame_code,
+            audio_features=audio_features,
+        )
 
-        # flame head
-        if self.config.flame_code_head:
-            rec_flame_params = self.model.flame_head_forward(rec)
-            rec_flame_code = flame_params_to_code(rec_flame_params)
-            gt_flame_code = flame_params_to_code(flame_params)
-            flame_loss = nn.functional.mse_loss(rec_flame_code, gt_flame_code)
-            self.log('val/flame_loss', flame_loss, on_step=False, on_epoch=True, prog_bar=False)
-            loss = loss + flame_loss * self.flame_loss_weight
-
+        loss, losses = self.calc_vq_loss(
+            pred_vertices=rec_vertices,
+            pred_flame_code=rec_flame_code,
+            pred_audio=rec_audio,
+            target_vertices=flame_vertices,
+            target_flame_params=flame_params,
+            target_audio=audio_features,
+            quant_loss=quant_loss,
+        )
         # logging
-        self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log('val/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[2] is not None:
-            self.log('val/flame_loss', losses[2], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[3] is not None:
-            self.log('val/vertex_loss', losses[3], on_step=False, on_epoch=True, prog_bar=False)
+        for k, v in losses.items():
+            self.log(f"val/{k}", v, on_step=False, on_epoch=True, prog_bar=True)
 
         return loss
 
@@ -213,7 +252,8 @@ class Stage1Runner(pl.LightningModule):
     def predict(
         self,
         flame_params: UnbatchedFlameParams,
-    ) -> Float[torch.Tensor, "time n_vertices 3"] | UnbatchedFlameParams:
+        audio_features: Float[torch.Tensor, "time feature_dim"] | None = None,
+    ) -> Float[torch.Tensor, "time n_vertices 3"]:
         """
         Returns the reconstructed flame vertices.
 
@@ -233,27 +273,29 @@ class Stage1Runner(pl.LightningModule):
             eye=flame_params.eye.unsqueeze(0),
             scale=flame_params.scale.unsqueeze(0),
         )
-        if self.config.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            template = self.canonical_flame_code
-        else:
-            x = self.flame_head.forward(flame_params)
-            template = self.canonical_flame_vertices
-        rec, _, _ = self.model.forward(x, template)
-
-        if self.config.use_flame_code:
-            rec = flame_code_to_params(rec)
-            rec = UnbatchedFlameParams(
-                shape=rec.shape.squeeze(0),
-                expr=rec.expr.squeeze(0),
-                neck=rec.neck.squeeze(0),
-                jaw=rec.jaw.squeeze(0),
-                eye=rec.eye.squeeze(0),
-                scale=rec.scale.squeeze(0),
+        if audio_features is not None:
+            audio_features = audio_features.unsqueeze(0)
+        flame_vertices = self.flame_head.forward(flame_params)
+        flame_code = torch.cat([flame_params.expr, flame_params.jaw], dim=-1)
+        template = self.canonical_flame_vertices
+        rec_vertices, rec_flame_code, _, _, _ = self.model.forward(
+            template=template,
+            vertices=flame_vertices,
+            flame_code=flame_code,
+            audio_features=audio_features,
+        )
+        if self.config.flame_mode == 'flame':
+            flame_params = FlameParams(
+                shape=flame_params.shape,
+                expr=rec_flame_code[:, :, :100],
+                neck=flame_params.neck,
+                jaw=rec_flame_code[:, :, 100:103],
+                eye=flame_params.eye,
+                scale=flame_params.scale,
             )
-        else:
-            rec = rec.squeeze(0)
-        return rec
+            rec_vertices = self.flame_head.forward(flame_params)
+
+        return rec_vertices.squeeze(0)
 
 
 # ==================================================================================== #
@@ -285,6 +327,7 @@ def train_vq_vae(config_path: str) -> None:
     train_set = QuantizationDataset(
         sequences=TRAIN_SEQUENCES,
         window_size=window_size,
+        data_dir=DATA_DIR_NERSEMBLE if not training_config.use_other_guy else OTHER_GUY_DATA_DIR,
     )
     train_loader = DataLoader(
         train_set,
@@ -296,6 +339,7 @@ def train_vq_vae(config_path: str) -> None:
     val_set = QuantizationDataset(
         sequences=TEST_SEQUENCES,
         window_size=window_size,
+        data_dir=DATA_DIR_NERSEMBLE if not training_config.use_other_guy else OTHER_GUY_DATA_DIR,
     )
     val_loader = DataLoader(
         val_set,

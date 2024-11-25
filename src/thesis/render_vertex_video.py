@@ -10,7 +10,7 @@ from tqdm import tqdm
 from thesis.code_talker.stage1_runner import Stage1Runner
 from thesis.code_talker.stage2_runner import Stage2Runner
 from thesis.data_management import SequenceManager, UnbatchedFlameParams
-from thesis.flame import FlameHead, FlameHeadWithInnerMouth
+from thesis.flame import FlameHead
 from thesis.video_utils import add_audio, render_mesh_image
 
 
@@ -74,9 +74,8 @@ def render_vertex_reconstruction(
     runner = Stage1Runner.load_from_checkpoint(checkpoint_path)
     runner.eval()
     runner.cuda()
-    flame_head = FlameHeadWithInnerMouth()
+    flame_head = FlameHead()
     flame_head.cuda()
-    disable_neck = runner.config.disable_neck
 
     # Load the sequence
     sm = SequenceManager(sequence=sequence)
@@ -84,17 +83,15 @@ def render_vertex_reconstruction(
     flame_params = UnbatchedFlameParams(
         shape=flame_params.shape.cuda(),
         expr=flame_params.expr.cuda(),
-        neck=flame_params.neck.cuda()
-        if not disable_neck else torch.zeros_like(flame_params.neck).cuda(),
+        neck=flame_params.neck.cuda(),
         jaw=flame_params.jaw.cuda(),
         eye=flame_params.eye.cuda(),
         scale=flame_params.scale.cuda(),
     )
+    audio_features = sm.audio_features[:].cuda()
 
     # Get vertices
-    vertices = runner.predict(flame_params)
-    if isinstance(vertices, UnbatchedFlameParams):
-        vertices = flame_head.forward(vertices)
+    vertices = runner.predict(flame_params, audio_features)
     faces = flame_head.faces
 
     # Render the video
@@ -149,13 +146,27 @@ def render_audio_prediction(
     runner = Stage2Runner.load_from_checkpoint(checkpoint_path)
     runner.eval()
     runner.cuda()
-    flame_head = FlameHeadWithInnerMouth()
+    flame_head = FlameHead()
     flame_head.cuda()
 
     # Get vertices
     vertices = runner.predict(audio_features)
-    if isinstance(vertices, UnbatchedFlameParams):
-        vertices = flame_head.forward(vertices)
+    if vertices.ndim == 2 and vertices.shape[1] == 103:  # flame_vertices
+        expr = vertices[:, 0:100]
+        jaw = vertices[:, 100:]
+        if sequence is not None:
+            flame_params = sm.flame_params[:]
+            flame_params = UnbatchedFlameParams(
+                shape=flame_params.shape.cuda(),
+                expr=expr.cuda(),
+                neck=flame_params.neck.cuda(),
+                jaw=jaw.cuda(),
+                eye=flame_params.eye.cuda(),
+                scale=flame_params.scale.cuda(),
+            )
+        else:
+            raise NotImplementedError("Need to implement the sequence loading.")
+        vertices = flame_head.forward(flame_params)
     faces = flame_head.faces
 
     # Render the video
@@ -205,29 +216,31 @@ def render_flame(
 
 if __name__ == '__main__':
 
-    mode = 'vertex_reconstruction'
-    # mode = 'audio_pred_sequence'
-    # mode = 'flame'
+    mode = 'audio_pred_sequence'
+    # mode = 'vertex_reconstruction'
     quick_time_compatible = False
     sequence = 100
+
+    # vae_checkpoint_path = 'tb_logs/vector_quantization/reverting_baseline_vq_vae/version_0/checkpoints/epoch=199-step=15400.ckpt'  # noqa
+    # vae_checkpoint_path = 'tb_logs/vector_quantization/test_audio_vqvae_subsampled/version_1/checkpoints/epoch=199-step=15400.ckpt'
+    # vae_checkpoint_path = 'tb_logs/vector_quantization/test_audio_vqvae_subsampled_single_code/version_24/checkpoints/epoch=199-step=15400.ckpt'  # noqa
+    vae_checkpoint_path = 'tb_logs/vector_quantization/new_flame_driven/version_0/checkpoints/epoch=199-step=15400.ckpt'
+    audio_checkpoint_path = 'tb_logs/audio_prediction/new_flame_driven/version_9/checkpoints/epoch=99-step=7700.ckpt'  # noqa
 
     match mode:
         case 'vertex_reconstruction':
             # vertex reconstruction
-            # checkpoint_path = 'tb_logs/vector_quantization/default_flame_vertex_loss/version_2/checkpoints/epoch=199-step=15400.ckpt'  # noqa
-            checkpoint_path = 'tb_logs/vector_quantization/final_baseline_l2/version_0/checkpoints/epoch=199-step=15400.ckpt'  # noqa
             output_path = f'tmp/vq_reconstruction_sequence_{sequence}.mp4'
             render_vertex_reconstruction(
-                checkpoint_path,
+                vae_checkpoint_path,
                 sequence,
                 output_path,
                 quick_time_compatible=quick_time_compatible)
 
         case 'audio_pred_sequence':
-            checkpoint_path = 'tb_logs/audio_prediction/code_head/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
             output_path = f'tmp/audio_pred_sequence_{sequence}.mp4'
             render_audio_prediction(
-                checkpoint_path,
+                audio_checkpoint_path,
                 output_path,
                 sequence=sequence,
                 quick_time_compatible=quick_time_compatible,
@@ -242,6 +255,3 @@ if __name__ == '__main__':
                 quick_time_compatible=quick_time_compatible,
                 use_neck=use_neck,
             )
-
-        case _:
-            raise ValueError(f"Invalid mode: {mode}")

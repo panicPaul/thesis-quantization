@@ -26,8 +26,10 @@ SERIALS = sorted([
     "222200048",
     "222200049",
 ])  # NOTE: the test cam is missing i think cam_222200037
-TRAIN_SEQUENCES = list(range(3, 80))
-TEST_SEQUENCES = list(range(80, 102))
+# TRAIN_SEQUENCES = list(range(3, 80))
+# TEST_SEQUENCES = list(range(80, 102))
+TRAIN_SEQUENCES = list(range(3, 6)) + list(range(11, 85))
+TEST_SEQUENCES = list(range(6, 11)) + list(range(85, 102))
 
 # flame constants
 FLAME_MESH_PATH = "assets/flame/head_template_mesh.obj"
