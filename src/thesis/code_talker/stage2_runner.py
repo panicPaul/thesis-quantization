@@ -13,7 +13,6 @@ from thesis.code_talker.models.code_talker_config import (
     CodeTalkerTrainingConfig,
 )
 from thesis.code_talker.models.stage2 import CodeTalker
-from thesis.code_talker.utils import flame_params_to_code
 from thesis.constants import CANONICAL_FLAME_PARAMS, TEST_SEQUENCES, TRAIN_SEQUENCES
 from thesis.data_management import (
     FlameParams,
@@ -46,39 +45,18 @@ class Stage2Runner(pl.LightningModule):
             self.flame_head = FlameHead()
         self.config = config
         self.training_config = training_config
-
         canonical_flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
-        if self.model.disable_neck:
-            canonical_flame_params = UnbatchedFlameParams(
-                shape=canonical_flame_params.shape,
-                expr=canonical_flame_params.expr,
-                neck=torch.zeros_like(canonical_flame_params.neck),
-                jaw=canonical_flame_params.jaw,
-                eye=canonical_flame_params.eye,
-                scale=canonical_flame_params.scale,
-            )
-        canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)  # (1, v, 3)
+        canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)
+        canonical_flame_vertices = canonical_flame_vertices
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
-        self.register_buffer("canonical_flame_code", flame_params_to_code(canonical_flame_params))
 
     def configure_optimizers(self):
         """ Configures the optimizers and schedulers. """
         # NOTE: even tho we do have weight decay as a config option they do not use it in their
         #       code base for whatever reason.
         optimizer = torch.optim.AdamW(
-            [{
-                'params': self.model.audio_feature_map.parameters(),
-            }, {
-                'params': self.model.vertices_map.parameters(),
-            }, {
-                'params': self.model.PPE.parameters(),
-            }, {
-                'params': self.model.transformer_decoder.parameters(),
-            }, {
-                'params': self.model.feat_map.parameters(),
-            }],
+            self.model.parameters(),
             lr=self.training_config.base_lr,
-            weight_decay=0.002,
         )
         # scheduler = StepLR(
         #    optimizer, step_size=self.training_config.step_size, gamma=self.training_config.gamma)
@@ -98,21 +76,15 @@ class Stage2Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-
-        if self.model.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_code.repeat(batch_size, 1)
-        else:
-            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        batch_size, _, _, _ = flame_vertices.shape
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)
 
         # forward pass
         loss, motion_loss, reg_loss = self.model.forward(
             audio_features=audio_features,
             template=template,
-            gt=x,
+            vertices=flame_vertices,
         )
 
         # logging
@@ -136,21 +108,15 @@ class Stage2Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-
-        if self.model.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_code.repeat(batch_size, 1)
-        else:
-            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        batch_size, _, _, _ = flame_vertices.shape
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)
 
         # forward pass
         loss, motion_loss, reg_loss = self.model.forward(
             audio_features=audio_features,
             template=template,
-            gt=x,
+            vertices=flame_vertices,
         )
 
         # logging
@@ -161,26 +127,8 @@ class Stage2Runner(pl.LightningModule):
     def predict(self, audio_features):
         """ Predicts the flame vertices from the audio features and template. """
         self.eval()
-        if self.model.use_flame_code:
-            template = self.canonical_flame_code
-        else:
-            template = self.canonical_flame_vertices
-        flame_vertices = self.model.predict(audio_features, template)
-
-        if self.model.flame_code_head:
-            flame_vertices = flame_vertices.unsqueeze(0)
-            flame_params = self.model.autoencoder.flame_head_forward(flame_vertices)
-            flame_params = UnbatchedFlameParams(
-                shape=flame_params.shape.squeeze(0),
-                expr=flame_params.expr.squeeze(0),
-                neck=flame_params.neck.squeeze(0),
-                jaw=flame_params.jaw.squeeze(0),
-                eye=flame_params.eye.squeeze(0),
-                scale=flame_params.scale.squeeze(0),
-            )
-            return flame_vertices.squeeze(0), flame_params
-        else:
-            return flame_vertices
+        template = self.canonical_flame_vertices
+        return self.model.predict(audio_features, template)
 
 
 # ==================================================================================== #

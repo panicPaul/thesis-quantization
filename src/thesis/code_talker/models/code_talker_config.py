@@ -7,8 +7,6 @@ class QuantizerConfig(NamedTuple):
     """
     Args:
         n_vertices (int):
-        use_flame_code (bool):
-        flame_code_head (bool):
         hidden_size (int):
         num_hidden_layers (int):
         num_attention_heads (int):
@@ -23,9 +21,7 @@ class QuantizerConfig(NamedTuple):
         quantization_mode (str): quantization mode
         disable_neck (bool):
     """
-    n_vertices: int = 5443  # 5143 for FLAME without inner mouth vertices
-    use_flame_code: bool = False
-    flame_code_head: bool = False
+    n_vertices: int = 5143
     hidden_size: int = 1024
     num_hidden_layers: int = 6
     num_attention_heads: int = 8

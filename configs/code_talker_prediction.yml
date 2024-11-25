@@ -1,13 +1,14 @@
 # audio to vertices prediction
 
-name: new_baseline_vertex_200
+name: final_final_revert_default
 
 model:
   # vq_vae_pretrained_path: tb_logs/vector_quantization/default_flame/version_0/checkpoints/epoch=199-step=15400.ckpt
   # vq_vae_pretrained_path: tb_logs/vector_quantization/default_flame/version_1/checkpoints/epoch=199-step=15400.ckpt
   # vq_vae_pretrained_path: tb_logs/vector_quantization/default_flame_vertex_loss/version_2/checkpoints/epoch=199-step=15400.ckpt
   # vq_vae_pretrained_path: tb_logs/vector_quantization/final_baseline_l2/version_0/checkpoints/epoch=199-step=15400.ckpt
-  vq_vae_pretrained_path: tb_logs/vector_quantization/new_baseline_vertex_200/version_0/checkpoints/epoch=199-step=15400.ckpt
+  # vq_vae_pretrained_path: tb_logs/vector_quantization/new_baseline_vertex_200/version_0/checkpoints/epoch=199-step=15400.ckpt
+  vq_vae_pretrained_path: tb_logs/vector_quantization/final_final_revert_default/version_0/checkpoints/epoch=199-step=15400.ckpt
 training: {}
 
 compile: False

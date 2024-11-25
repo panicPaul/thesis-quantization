@@ -16,7 +16,6 @@ from thesis.code_talker.models.code_talker_config import (
     QuantizerConfig,
 )
 from thesis.code_talker.models.stage1_nersemble import VQAutoEncoder
-from thesis.code_talker.utils import flame_code_to_params, flame_params_to_code
 from thesis.constants import CANONICAL_FLAME_PARAMS, TEST_SEQUENCES, TRAIN_SEQUENCES
 from thesis.data_management import (
     FlameParams,
@@ -59,8 +58,6 @@ class Stage1Runner(pl.LightningModule):
             )
         canonical_flame_vertices = self.flame_head.forward(canonical_flame_params)  # (1, v, 3)
         self.register_buffer("canonical_flame_vertices", canonical_flame_vertices)
-        self.register_buffer("canonical_flame_code", flame_params_to_code(canonical_flame_params))
-        self.flame_loss_weight = 1e-2
 
     def configure_optimizers(self):
         """ Configures the optimizers and schedulers. """
@@ -77,28 +74,10 @@ class Stage1Runner(pl.LightningModule):
     # TODO: experiment with predicting flame vertices directly
     def calc_vq_loss(self, pred, target, quant_loss, quant_loss_weight=1.0, alpha=1.0):
         """ function that computes the various components of the VQ loss """
-
-        if not self.config.use_flame_code:
-            rec_loss = nn.functional.l1_loss(pred, target)
-            # rec_loss = nn.functional.mse_loss(pred, target)
-            flame_loss = None
-            vertex_loss = rec_loss
-        else:
-            flame_loss = nn.functional.mse_loss(pred, target)
-            pred_params = flame_code_to_params(pred)
-            target_params = flame_code_to_params(target)
-            pred_vertices = self.flame_head.forward(pred_params)
-            target_vertices = self.flame_head.forward(target_params)
-            vertex_loss = nn.functional.l1_loss(pred_vertices, target_vertices)
-            # vertex_loss = nn.functional.mse_loss(pred_vertices, target_vertices)
-            # TODO: add weights here, log both losses!
-            rec_loss = vertex_loss + flame_loss * self.flame_loss_weight
-
+        rec_loss = nn.functional.l1_loss(pred, target)
         # loss is VQ reconstruction + weighted pre-computed quantization loss
         quant_loss = quant_loss.mean()
-        return quant_loss*quant_loss_weight + rec_loss, [
-            rec_loss, quant_loss, flame_loss, vertex_loss
-        ]
+        return quant_loss*quant_loss_weight + rec_loss, [rec_loss, quant_loss]
 
     def training_step(self, batch, batch_idx):
         """ Training step for the model. """
@@ -114,46 +93,23 @@ class Stage1Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-        if self.config.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_code.repeat(batch_size, 1)  # (b, c)
-        else:
-            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        batch_size = flame_vertices.shape[0]
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
 
         # forward pass
-        rec, quant_loss, info = self.model.forward(x, template)
-        loss, losses = self.calc_vq_loss(rec, x, quant_loss)
-
-        # flame head
-        if self.config.flame_code_head:
-            rec_flame_params = self.model.flame_head_forward(rec)
-            rec_flame_code = flame_params_to_code(rec_flame_params)
-            gt_flame_code = flame_params_to_code(flame_params)
-            flame_loss = nn.functional.mse_loss(rec_flame_code, gt_flame_code)
-            self.log('train/flame_loss', flame_loss, on_step=False, on_epoch=True, prog_bar=False)
-            loss = loss + flame_loss * self.flame_loss_weight
+        rec, quant_loss, info = self.model.forward(flame_vertices, template)
+        loss, losses = self.calc_vq_loss(rec, flame_vertices, quant_loss)
 
         # logging
         self.log('train/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log('train/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
         self.log('train/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[2] is not None:
-            self.log('train/flame_loss', losses[2], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[3] is not None:
-            self.log('train/vertex_loss', losses[3], on_step=False, on_epoch=True, prog_bar=False)
 
         # log reconstructed picture
         if self.global_step % 250 == 0:
-            if self.config.use_flame_code:
-                x = flame_code_to_params(rec)
-                x = self.flame_head.forward(x)[0][0]  # (v, 3)
-            else:
-                x = rec[0][0]  # (v, 3)
             img = render_mesh_image(
-                vertex_positions=x,
+                vertex_positions=rec[0][0],  # (v, 3)
                 faces=self.flame_head.faces,
             )
             self.logger.experiment.add_image(
@@ -175,37 +131,18 @@ class Stage1Runner(pl.LightningModule):
                 eye=flame_params.eye,
                 scale=flame_params.scale,
             )
-
-        if self.config.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_code.repeat(batch_size, 1)
-        else:
-            x = self.flame_head.forward(flame_params)  # (b, t, v, 3)
-            batch_size = x.shape[0]
-            template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
+        flame_vertices = self.flame_head.forward(flame_params)  # (b, t, v, 3)
+        batch_size = flame_vertices.shape[0]
+        template = self.canonical_flame_vertices.repeat(batch_size, 1, 1)  # (b, v, 3)
 
         # forward pass
-        rec, quant_loss, info = self.model.forward(x, template)
-        loss, losses = self.calc_vq_loss(rec, x, quant_loss)
-
-        # flame head
-        if self.config.flame_code_head:
-            rec_flame_params = self.model.flame_head_forward(rec)
-            rec_flame_code = flame_params_to_code(rec_flame_params)
-            gt_flame_code = flame_params_to_code(flame_params)
-            flame_loss = nn.functional.mse_loss(rec_flame_code, gt_flame_code)
-            self.log('val/flame_loss', flame_loss, on_step=False, on_epoch=True, prog_bar=False)
-            loss = loss + flame_loss * self.flame_loss_weight
+        rec, quant_loss, info = self.model.forward(flame_vertices, template)
+        loss, losses = self.calc_vq_loss(rec, flame_vertices, quant_loss)
 
         # logging
         self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val/rec_loss', losses[0], on_step=False, on_epoch=True, prog_bar=True)
         self.log('val/quant_loss', losses[1], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[2] is not None:
-            self.log('val/flame_loss', losses[2], on_step=False, on_epoch=True, prog_bar=False)
-        if losses[3] is not None:
-            self.log('val/vertex_loss', losses[3], on_step=False, on_epoch=True, prog_bar=False)
 
         return loss
 
@@ -213,7 +150,7 @@ class Stage1Runner(pl.LightningModule):
     def predict(
         self,
         flame_params: UnbatchedFlameParams,
-    ) -> Float[torch.Tensor, "time n_vertices 3"] | UnbatchedFlameParams:
+    ) -> Float[torch.Tensor, "time n_vertices 3"]:
         """
         Returns the reconstructed flame vertices.
 
@@ -233,27 +170,10 @@ class Stage1Runner(pl.LightningModule):
             eye=flame_params.eye.unsqueeze(0),
             scale=flame_params.scale.unsqueeze(0),
         )
-        if self.config.use_flame_code:
-            x = flame_params_to_code(flame_params)
-            template = self.canonical_flame_code
-        else:
-            x = self.flame_head.forward(flame_params)
-            template = self.canonical_flame_vertices
-        rec, _, _ = self.model.forward(x, template)
-
-        if self.config.use_flame_code:
-            rec = flame_code_to_params(rec)
-            rec = UnbatchedFlameParams(
-                shape=rec.shape.squeeze(0),
-                expr=rec.expr.squeeze(0),
-                neck=rec.neck.squeeze(0),
-                jaw=rec.jaw.squeeze(0),
-                eye=rec.eye.squeeze(0),
-                scale=rec.scale.squeeze(0),
-            )
-        else:
-            rec = rec.squeeze(0)
-        return rec
+        flame_vertices = self.flame_head.forward(flame_params)
+        template = self.canonical_flame_vertices
+        rec, _, _ = self.model.forward(flame_vertices, template)
+        return rec.squeeze(0)
 
 
 # ==================================================================================== #

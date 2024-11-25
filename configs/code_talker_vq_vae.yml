@@ -1,16 +1,14 @@
 # Config for the VQ-VAE model
-name: new_baseline_vertex_200
+name: final_final_revert_default
 
 model:
   quantization_mode: default
   disable_neck: true
   n_vertices: 5443
-  use_flame_code: false
-  flame_code_head: false
-
 
 training:
   epochs: 200
   base_lr: 0.0001
+  # base_lr: 0.001
 
 compile: false
