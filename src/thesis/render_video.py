@@ -37,7 +37,7 @@ from thesis.data_management import (
 from thesis.flame import FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.dynamic_model import DynamicGaussianSplatting
 from thesis.utils import assign_segmentation_class
-from thesis.video_utils import add_audio
+from thesis.video_utils import add_audio, change_audio_codec_to_aac
 
 
 @torch.no_grad()
@@ -573,6 +573,7 @@ def main(
         quicktime_compatible=quicktime_compatible,
         trim_to_fit=True,
     )
+    change_audio_codec_to_aac(output_path)
 
 
 # ============================================================================================== #
@@ -587,8 +588,8 @@ if __name__ == '__main__':
     use_other_guy = False
     quicktime_compatible: bool = False
     audio_path: str | None = None  # 'tmp/german_test.m4a'
-    # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
-    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_monocular_overnight/version_1/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_monocular_overnight/version_1/checkpoints/epoch=7-step=800000.ckpt'  # noqa
 
     # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/other_guy_overnight/version_0/checkpoints/epoch=119-step=800000.ckpt' # noqa
     # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_limited_data_3-13/version_0/checkpoints/epoch=6-step=240000.ckpt'  # noqa
