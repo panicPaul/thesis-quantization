@@ -86,7 +86,10 @@ def process_audio(
         device='cuda',
     )
     print("\tDone!")
-
+    # delete the model to free up memory
+    del processor
+    del wav2vec_model
+    torch.cuda.empty_cache()
     return audio_features
 
 
@@ -455,7 +458,8 @@ def main(
          [-0.4220, -0.4518, -0.7860, 1.0642], [0.0000, 0.0000, 0.0000, 1.0000]]),
     image_height: int = 1604,
     image_width: int = 1100,
-    background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66])
+    background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66]),
+    n_frames_override: int | None = None,
 ) -> None:
     """
     Renders a video from audio.
@@ -488,16 +492,19 @@ def main(
         n_frames = sm.flame_params[:].expr.shape[0]
     else:
         n_frames = None
+    if n_frames_override is not None:
+        n_frames = n_frames_override
     audio_features = process_audio(audio_path, n_frames)
     assert (audio_to_flame_checkpoint_path is not None) ^ (flame_params_sequence is not None), \
         "Either provide a checkpoint for audio-to-flame prediction or a sequence number to load " \
         "ground truth flame parameters."
     try:
         if flame_params_sequence is not None:
-            name = f'sequence_{sequence}'
+            name = f'sequence_{flame_params_sequence}'
         else:
-            name = audio_path.split('/')[-3]
-            name = f"sequence_{int(name.split('_')[-1])}"
+            sequence = audio_path.split('/')[-3]
+            sequence = int(sequence.split('_')[-1])
+            name = f'sequence_{sequence}'
     except IndexError:
         name = audio_path.split('/')[-1].split('.')[0]
     output_dir = f'{output_dir}/{splats.name}/{mode}'
@@ -618,6 +625,13 @@ if __name__ == '__main__':
         smoothing_mode = args.smoothing_mode
 
     # Processing
+    if audio_path is None:
+        # it's not precisely 30fps, and not constant either so this is a hack to align frames
+        data_dir = DATA_DIR_NERSEMBLE if not use_other_guy else OTHER_GUY_DATA_DIR
+        sm = SequenceManager(sequence, data_dir=data_dir)
+        n_frames = len(sm)
+    else:
+        n_frames = None
     if sequence is not None:
         audio_path = '../new_master_thesis/data/nersemble/Paul-audio-856/856/sequences/' \
             f'sequence_{sequence:04d}/audio/audio_recording.ogg'
@@ -638,6 +652,10 @@ if __name__ == '__main__':
                                     [-0.0377, -0.8575, 0.5131, 0.1364],
                                     [-0.4220, -0.4518, -0.7860, 1.0642],
                                     [0.0000, 0.0000, 0.0000, 1.0000]])
+
+    if False:
+        # world_2_cam = get_camera_path(n_frames)
+        world_2_cam = get_camera_path_circle(n_frames)
 
     # Render video
     match mode:
@@ -684,4 +702,8 @@ if __name__ == '__main__':
                 background_color=background_color,
                 world_2_cam=world_2_cam,
                 output_dir='tmp/pred' if not quicktime_compatible else 'tmp/quicktime/pred',
+                n_frames_override=n_frames,
             )
+
+        case _:
+            raise ValueError("Mode must be one of: 'flame', 'audio', 'gt'")
