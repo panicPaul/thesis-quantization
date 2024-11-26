@@ -493,8 +493,11 @@ def main(
         "Either provide a checkpoint for audio-to-flame prediction or a sequence number to load " \
         "ground truth flame parameters."
     try:
-        name = f'sequence_{sequence}' if flame_params_sequence is not None else audio_path.split(
-            '/')[-3]
+        if flame_params_sequence is not None:
+            name = f'sequence_{sequence}'
+        else:
+            name = audio_path.split('/')[-3]
+            name = f"sequence_{int(name.split('_')[-1])}"
     except IndexError:
         name = audio_path.split('/')[-1].split('.')[0]
     output_dir = f'{output_dir}/{splats.name}/{mode}'
@@ -577,7 +580,9 @@ if __name__ == '__main__':
     use_other_guy = False
     quicktime_compatible: bool = False
     audio_path: str | None = None  # 'tmp/german_test.m4a'
-    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_monocular_overnight/version_1/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+
     # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/other_guy_overnight/version_0/checkpoints/epoch=119-step=800000.ckpt' # noqa
     # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_limited_data_3-13/version_0/checkpoints/epoch=6-step=240000.ckpt'  # noqa
     # audio_to_flame_checkpoint: str | None = None

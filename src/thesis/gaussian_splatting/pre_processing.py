@@ -196,6 +196,8 @@ class RiggedPreProcessor(nn.Module):
         features = splats["features"]
         if infos is None:
             infos = {}
+        if camera_indices is None:
+            camera_indices = torch.zeros(1, dtype=torch.int64, device=means.device)
 
         # ---> rigged deformation field
         indices, _ = self.flame_knn.forward(means)

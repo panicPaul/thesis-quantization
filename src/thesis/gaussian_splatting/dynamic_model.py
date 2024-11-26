@@ -1068,7 +1068,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 cam_2_world=cur_cam_2_world,
                 world_2_cam=cur_world_2_cam,
                 camera_indices=None,
-                cur_sh_degree=None,
+                cur_sh_degree=self.max_sh_degree,
                 flame_params=flame_params_t,
                 audio_features=audio_features_t,
                 windowed_rigging_params=windowed_rigging_params_t,
@@ -1123,7 +1123,7 @@ def training_loop(config_path: str) -> None:
         sequences=list(config.train_sequences)
         if config.train_sequences is not None else TRAIN_SEQUENCES,
         data_dir=config.data_dir if config.data_dir is not None else DATA_DIR_NERSEMBLE,
-        cameras=TRAIN_CAMS,
+        cameras=TRAIN_CAMS if not config.gaussian_splatting_settings.monocular_view else TEST_CAMS,
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
         window_size=config.gaussian_splatting_settings.prior_window_size,
         image_downsampling_factor=config.gaussian_splatting_settings.image_downsampling_factor,

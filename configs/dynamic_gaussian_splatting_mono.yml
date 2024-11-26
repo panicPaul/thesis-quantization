@@ -1,6 +1,6 @@
 
-name: 2dgs_full_res_limited_data_3-13
-# port 53823
+name: 2dgs_monocular_overnight
+# port 43473
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
@@ -17,7 +17,7 @@ gaussian_splatting_settings:
   learnable_shader: true
 
   # rasterization_settings
-  sh_degree: 3
+  sh_degree: 0
   radius_clip: 0.3
 
 
@@ -34,13 +34,13 @@ gaussian_splatting_settings:
   # densification_mode: default
   refine_start_iteration: 250
 
-  # refine_stop_iteration: 90_000
-  # train_iterations: 100_000
-  # lpips_start_iteration: 35_000
+  refine_stop_iteration: 90_000
+  train_iterations: 100_000
+  lpips_start_iteration: 35_000
 
-  refine_stop_iteration: 25_000
-  train_iterations: 30_000
-  lpips_start_iteration: 10_000
+  # refine_stop_iteration: 25_000
+  # train_iterations: 30_000
+  # lpips_start_iteration: 10_000
 
   cap_max: 100_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
@@ -88,7 +88,7 @@ gaussian_splatting_settings:
   camera_batch_size: 1 # anything more than 2 is going to be out of memory
   log_images_interval: 250
   shuffle_train_data: true # keep at true, trade-off not worth it
-#   image_downsampling_factor: 2.0
+  monocular_view: true
 
 # ---> Learning Rates
 learning_rates:
