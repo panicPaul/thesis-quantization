@@ -2,28 +2,30 @@ name: thesis_quantization
 channels:
   - pytorch
   - conda-forge
-  - defaults
   - nvidia/label/cuda-12.4.0
+  # - nvidia/label/cuda-12.2.0
   - nvidia
   #- pytorch3d
+  - defaults
 
 # TODO: move all dependencies that can be moved to pip to pip
 dependencies:
   #- python=3.12.0
-  - python=3.11.9
-  - pytorch
-  - torchaudio
-  - torchvision
+  # - python=3.11.9
+  - python=3.10
+  # - pytorch
+  # - torchaudio
+  # - torchvision
   - cudatoolkit
   - cuda-nvcc
   - cuda-cudart-dev
   - gcc=11.*
   - gxx=11.*
   - faiss-gpu=1.8.0
+  - pip
   # pytorch3d
-# conda install pytorch-cluster -c pyg
-
-  #conda install menpo::osmesa
+  # conda install pytorch-cluster -c pyg  # destroys EVERYTHING, but why did it used to work?
+  # conda install menpo::osmesa
 
 
   - pip:

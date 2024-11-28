@@ -2,14 +2,37 @@
 
 import torch
 import torch.nn as nn
-from torch_geometric.nn import knn
 
 from thesis.data_management import (
     GaussianSplats,
     UnbatchedFlameParams,
     load_point_cloud,
 )
-from thesis.flame import FlameHeadWithInnerMouth
+from thesis.flame import FlameHead
+
+# from torch_geometric.nn import knn
+
+
+def knn(x, y, k):
+    """
+    Compute k-nearest neighbors.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+        y (torch.Tensor): Input tensor.
+        k (int): Number of nearest neighbors.
+
+    Returns:
+        torch.Tensor: Sender indices.
+        torch.Tensor: Receiver indices.
+    """
+    x_norm = (x**2).sum(dim=-1, keepdim=True)
+    y_norm = (y**2).sum(dim=-1, keepdim=True)
+    dist = x_norm + y_norm.transpose(-2, -1) - 2.0 * x @ y.transpose(-2, -1)
+    _, indices = dist.topk(k=k, dim=-1, largest=False)
+    sender = torch.arange(x.shape[0], device=x.device).view(-1, 1).repeat(1, k).view(-1)
+    receiver = indices.view(-1)
+    return sender, receiver
 
 
 def rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
@@ -132,6 +155,7 @@ def point_cloud_initialization(
 
 def flame_initialization(
     flame_params: UnbatchedFlameParams,
+    flame_head: FlameHead,
     scene_scale: float = 0.2,
     initial_opacity: float = 0.1,
     feature_dim: int | None = None,
@@ -155,7 +179,6 @@ def flame_initialization(
         GaussianSplats: Flame parameters initialized splats.
     """
 
-    flame_head = FlameHeadWithInnerMouth()
     flame_head.to(flame_params.expr.device)
     vertices = flame_head.forward(flame_params)
     means = vertices.squeeze(0)

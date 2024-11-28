@@ -16,12 +16,16 @@ description = "Speech-driven Face Synthesis with 3D Gaussian Splatting for my ma
 readme = "README.md"
 dependencies = [
     # general dependencies
-    "torch",
+    "torch==2.4.1",
+    "torchvision==0.19.1",
+    'torchaudio==2.4.1',
     "pillow",
     "tqdm",
     "numpy",
     "dreifus",
-    "gsplat==1.4",
+    'ninja',
+    'rich',
+    #"gsplat==1.4", # pip install gsplat --index-url https://docs.gsplat.studio/whl/pt24cu124
     "jaxtyping",
     "beartype",
     "pre-commit",
@@ -69,5 +73,5 @@ dependencies = [
     'open3d',
     'torch_geometric',
     'yapf',
-
+    'smplx',
     ]

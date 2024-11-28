@@ -24,7 +24,8 @@ from thesis.deformation_field.barycentric_weighting import (
 )
 from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
-from thesis.flame import FlameHeadWithInnerMouth
+from thesis.flame import FlameHead, FlameHeadVanilla, FlameHeadWithInnerMouth
+from thesis.gaussian_splatting.per_gaussian_coloring import PerGaussianColoring
 from thesis.gaussian_splatting.per_gaussian_deformation import PerGaussianDeformations
 from thesis.gaussian_splatting.view_dependent_coloring import (
     LearnableShader,
@@ -70,8 +71,20 @@ class RiggedPreProcessor(nn.Module):
         self.register_buffer("canonical_flame_scale", canonical_flame_params.scale)
         self.cuda()
 
-        self.flame_head = FlameHeadWithInnerMouth()
-        self.flame_knn = FlameKNN(k=3, canonical_params=self.canonical_flame_params)
+        match gaussian_splatting_settings.flame_head_type.lower():
+            case 'with_inner_mouth':
+                self.flame_head = FlameHeadWithInnerMouth()
+                n_vertices = 5443
+            case 'with_teeth':
+                self.flame_head = FlameHead()
+                n_vertices = 5143
+            case 'vanilla':
+                self.flame_head = FlameHeadVanilla()
+                n_vertices = 5023
+            case _:
+                raise ValueError("Unknown flame head type.")
+        self.flame_knn = FlameKNN(
+            k=3, canonical_params=self.canonical_flame_params, flame_head=self.flame_head)
         self.flame_mesh_extractor = FlameMeshSE3Extraction(self.flame_head)
 
         if gaussian_splatting_settings.use_view_dependent_color_mlp:
@@ -93,6 +106,22 @@ class RiggedPreProcessor(nn.Module):
                 mlp_layers=4,
                 mlp_hidden_size=128,
                 per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
+                n_vertices=n_vertices,
+            )
+
+        if gaussian_splatting_settings.per_gaussian_coloring_adjustment:
+            self.per_gaussian_color_adjustment = PerGaussianColoring(
+                window_size=gaussian_splatting_settings.prior_window_size,
+                use_audio_features=gaussian_splatting_settings
+                .per_gaussian_coloring_adjustment_use_audio,
+                use_flame_params=gaussian_splatting_settings
+                .per_gaussian_coloring_adjustment_use_flame,
+                use_rigging_params=gaussian_splatting_settings
+                .per_gaussian_coloring_adjustment_use_rigging,
+                mlp_layers=4,
+                mlp_hidden_size=128,
+                per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
+                n_vertices=n_vertices,
             )
 
         if gaussian_splatting_settings.learnable_shader:
@@ -111,7 +140,7 @@ class RiggedPreProcessor(nn.Module):
             scale=self.canonical_flame_scale,
         )
 
-    def setup_optimizer(self) -> AdamW:
+    def setup_optimizer(self) -> AdamW | None:
         """ Sets up the optimizer for the pre-processor. """
         batch_size = self.gaussian_splatting_settings.camera_batch_size
         batch_scaling = math.sqrt(batch_size)
@@ -133,13 +162,22 @@ class RiggedPreProcessor(nn.Module):
                 'lr': self.learning_rates.per_gaussian_deformations_lr * batch_scaling,
                 'weight_decay': 1e-2,  # standard weight decay
             })
+        if hasattr(self, "per_gaussian_color_adjustment"):
+            params.append({
+                "params": self.per_gaussian_color_adjustment.parameters(),
+                'lr': self.learning_rates.per_gaussian_color_adjustment_lr * batch_scaling,
+                'weight_decay': 1e-2,  # standard weight decay
+            })
         if hasattr(self, "learnable_shader"):
             params.append({
                 "params": self.learnable_shader.parameters(),
                 'lr': self.learning_rates.learnable_shader_lr * batch_scaling,
                 'weight_decay': 1e-2,  # standard weight decay
             })
-        return AdamW(params)
+        if len(params) == 0:
+            return None
+        else:
+            return AdamW(params)
 
     def forward(
         self,
@@ -194,43 +232,55 @@ class RiggedPreProcessor(nn.Module):
         means = splats["means"]
         quats = splats["quats"]
         features = splats["features"]
+        if 'colors' in splats:
+            colors = splats['colors']
         if infos is None:
             infos = {}
         if camera_indices is None:
             camera_indices = torch.zeros(1, dtype=torch.int64, device=means.device)
 
         # ---> rigged deformation field
-        indices, _ = self.flame_knn.forward(means)
-        canonical_vertices = self.flame_head.forward(self.canonical_flame_params)
-        deformed_vertices = rigging_params.unsqueeze(0)
-        vertex_rotations, vertex_translations = self.flame_mesh_extractor.forward(
-            canonical_vertices, deformed_vertices)
-        vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
-        gaussian_rotations = self.flame_knn.gather(
-            indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
-        # NOTE: I do not want to have to deal with spherical interpolation and this should be
-        #       close enough
-        # gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
-        # gaussian_rotations = gaussian_rotations.permute(1, 0,
-        #                                                 2)  # (window_size, n_gaussians, 4)
+        if self.gaussian_splatting_settings.flame_deformation_field:
+            indices, _ = self.flame_knn.forward(means)
+            canonical_vertices = self.flame_head.forward(self.canonical_flame_params)
+            deformed_vertices = rigging_params.unsqueeze(0)
+            vertex_rotations, vertex_translations = self.flame_mesh_extractor.forward(
+                canonical_vertices, deformed_vertices)
+            vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
+            gaussian_rotations = self.flame_knn.gather(
+                indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
+            # NOTE: I do not want to have to deal with spherical interpolation and this should be
+            #       close enough
+            # gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
+            # gaussian_rotations = gaussian_rotations.permute(1, 0,
+            #                                                 2)  # (window_size, n_gaussians, 4)
 
-        # (n_gaussians, k, window_size, 4) -> (window_size, n_gaussians, k, 4)
-        gaussian_rotations = gaussian_rotations.permute(2, 0, 1, 3)
+            # (n_gaussians, k, window_size, 4) -> (window_size, n_gaussians, k, 4)
+            gaussian_rotations = gaussian_rotations.permute(2, 0, 1, 3)
 
-        vertex_translations = vertex_translations.permute(1, 0, 2)  # (n_vertices, window_size, 3)
-        gaussian_translations = self.flame_knn.gather(
-            indices, vertex_translations)  # (n_gaussians, k, window_size, 3)
-        nn_positions = self.flame_knn.gather(indices, canonical_vertices[0])  # (n_gaussians, 3)
-        barycentric_weights = compute_barycentric_weights(means, nn_positions)  # (n_gaussians, 3)
-        gaussian_translations = apply_barycentric_weights(
-            barycentric_weights, gaussian_translations)  # (n_gaussians, window_size, 3)
-        gaussian_translations = gaussian_translations.permute(1, 0,
-                                                              2)  # (window_size, n_gaussians, 3)
+            vertex_translations = vertex_translations.permute(1, 0,
+                                                              2)  # (n_vertices, window_size, 3)
+            gaussian_translations = self.flame_knn.gather(
+                indices, vertex_translations)  # (n_gaussians, k, window_size, 3)
+            nn_positions = self.flame_knn.gather(indices,
+                                                 canonical_vertices[0])  # (n_gaussians, 3)
+            barycentric_weights = compute_barycentric_weights(means,
+                                                              nn_positions)  # (n_gaussians, 3)
+            gaussian_translations = apply_barycentric_weights(
+                barycentric_weights, gaussian_translations)  # (n_gaussians, window_size, 3)
+            gaussian_translations = gaussian_translations.permute(
+                1, 0, 2)  # (window_size, n_gaussians, 3)
 
-        # remove window size
-        gaussian_rotations = gaussian_rotations.squeeze(0)
-        gaussian_translations = gaussian_translations.squeeze(0)
-        barycentric_weights = barycentric_weights.squeeze(0)
+            # remove window size
+            gaussian_rotations = gaussian_rotations.squeeze(0)
+            gaussian_translations = gaussian_translations.squeeze(0)
+            barycentric_weights = barycentric_weights.squeeze(0)
+
+        else:
+            gaussian_rotations = torch.zeros_like(quats)
+            gaussian_rotations[:, 0] = 1.0
+            gaussian_rotations = gaussian_rotations.unsqueeze(1)
+            gaussian_translations = torch.zeros_like(means)
 
         # apply the deformation field
         means = means + gaussian_translations
@@ -251,6 +301,19 @@ class RiggedPreProcessor(nn.Module):
             quats = quaternion_multiplication(rotation_adjustments, quats)
             infos['per_gaussian_movement'] = translation_adjustments.norm(dim=-1).mean()
 
+        if hasattr(self, "per_gaussian_color_adjustment"):
+            color_adjustments = self.per_gaussian_color_adjustment.forward(
+                splats=splats,
+                rigged_rotation=gaussian_rotations[:, 0],
+                rigged_translation=gaussian_translations,
+                audio_features=audio_features,
+                flame_params=flame_params,
+                rigging_params=windowed_rigging_params,
+            )
+            colors = colors + color_adjustments
+            infos['per_gaussian_color_adjustment'] = color_adjustments.norm(dim=-1).mean()
+            colors = nn.functional.sigmoid(colors)
+
         # ---> SE(3) transformation
         rotation = se3_transform.rotation
         translation = se3_transform.translation
@@ -264,11 +327,12 @@ class RiggedPreProcessor(nn.Module):
                 features=features,
                 camera_ids=camera_indices,
                 means=means,
-                colors=splats['colors'],
+                colors=colors,
                 cam_2_world=cam_2_world,
                 cur_sh_degree=cur_sh_degree
                 if cur_sh_degree is not None else self.gaussian_splatting_settings.sh_degree,
             )
+            # are being sigmoided here
         else:
             colors = colors = torch.cat([splats["sh0"], splats["shN"]], 1)
         scales = torch.exp(splats["scales"])

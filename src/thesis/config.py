@@ -20,10 +20,20 @@ class GaussianSplattingSettings:
     use_view_dependent_color_mlp: bool = True
     prior_window_size: int = 9
     motion_prediction_ease_in_steps: int = 1_000
+
     per_gaussian_motion_adjustment: bool = True
     per_gaussian_motion_adjustment_use_audio: bool = False
     per_gaussian_motion_adjustment_use_flame: bool = False
+    per_gaussian_motion_adjustment_use_rigging: bool = False
+
+    per_gaussian_coloring_adjustment: bool = False
+    per_gaussian_coloring_adjustment_use_audio: bool = False
+    per_gaussian_coloring_adjustment_use_flame: bool = False
+    per_gaussian_coloring_adjustment_use_rigging: bool = False
+
     audio_latent_dim: int = 8
+
+    flame_head_type: str = 'with_inner_mouth'
 
     # rasterization_settings
     sh_degree: int = 3
@@ -96,12 +106,21 @@ class GaussianSplattingSettings:
 @dataclass
 class DynamicGaussianSplattingSettings:
     # pre-processing settings
+    flame_deformation_field: bool = True
+    flame_head_type: str = 'with_inner_mouth'
     use_view_dependent_color_mlp: bool = True
     prior_window_size: int = 9
+
     per_gaussian_motion_adjustment: bool = True
     per_gaussian_motion_adjustment_use_audio: bool = False
     per_gaussian_motion_adjustment_use_flame: bool = False
     per_gaussian_motion_adjustment_use_rigging: bool = False
+
+    per_gaussian_coloring_adjustment: bool = False
+    per_gaussian_coloring_adjustment_use_audio: bool = False
+    per_gaussian_coloring_adjustment_use_flame: bool = False
+    per_gaussian_coloring_adjustment_use_rigging: bool = False
+
     learnable_shader: bool = False
 
     # rasterization_settings
@@ -175,6 +194,8 @@ class DynamicGaussianSplattingSettings:
     image_downsampling_factor: float = 1.0
     use_other_guy: bool = False
     monocular_view: bool = False
+    over_sample_open_jaw: bool = False
+    over_sample_probability: float = 0.5
 
 
 def load_config(path: str, mode: Literal['default', 'dynamic']) -> DictConfig:

@@ -165,21 +165,31 @@ def extract_se3_from_mesh(
     deformed_point_cloud = gather_neighbors_batched(deformed_vertices, neighbors, neighbors_mask)
 
     # Compute the rotation and translation for each vertex
-    rotation = torch.vmap(torch.vmap(unbatched_kabsch_umeyama,))(  # batch  # vertices
-        canonical_point_cloud,
-        deformed_point_cloud,
-        canonical_vertices[:, :-n_neighborless_vertices],
-        deformed_vertices[:, :-n_neighborless_vertices],
-    )
-    # pad the remaining vertices with identity
-    identity_rotation = torch.eye(
-        3, device=rotation.device).unsqueeze(0).unsqueeze(0)  # (time, vertices, 3, 3)
-    identity_rotation = identity_rotation.expand(rotation.shape[0], n_neighborless_vertices, 3, 3)
-    rotation = torch.cat([rotation, identity_rotation], dim=1)
+    if n_neighborless_vertices > 0:
+        rotation = torch.vmap(torch.vmap(unbatched_kabsch_umeyama,))(  # batch  # vertices
+            canonical_point_cloud,
+            deformed_point_cloud,
+            canonical_vertices[:, :-n_neighborless_vertices],
+            deformed_vertices[:, :-n_neighborless_vertices],
+        )
+        # pad the remaining vertices with identity
+        identity_rotation = torch.eye(
+            3, device=rotation.device).unsqueeze(0).unsqueeze(0)  # (time, vertices, 3, 3)
+        identity_rotation = identity_rotation.expand(rotation.shape[0], n_neighborless_vertices, 3,
+                                                     3)
+        rotation = torch.cat([rotation, identity_rotation], dim=1)
+    else:
+        rotation = torch.vmap(torch.vmap(unbatched_kabsch_umeyama,))(  # batch  # vertices
+            canonical_point_cloud,
+            deformed_point_cloud,
+            canonical_vertices,
+            deformed_vertices,
+        )
+        rotation = rotation.contiguous()
 
     rotation = rotation_matrix_to_quaternion(rotation)
     translation = deformed_vertices - canonical_vertices
-
+    assert rotation.shape[:2] == translation.shape[:2]
     return rotation, translation
 
 

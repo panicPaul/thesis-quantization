@@ -271,7 +271,7 @@ class LossComputer(nn.Module):
             eyebrows_mask = torch.logical_or(left_eyebrow_mask, right_eyebrow_mask)
             eyebrows_mask = repeat(eyebrows_mask * eyebrows_mask, "cam H W -> cam H W f", f=3)
             pred = rearrange(raw_rendered_images * eyebrows_mask, "cam H W f -> cam f H W")
-            tgt = rearrange(target_images, "cam H W f -> cam f H W")
+            tgt = rearrange(target_images * eyebrows_mask, "cam H W f -> cam f H W")
             eyebrows_ssim_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["eyebrows_ssim"] = eyebrows_ssim_loss
             loss = loss + eyebrows_ssim_loss * self.gaussian_splatting_settings.eyebrows_ssim_loss

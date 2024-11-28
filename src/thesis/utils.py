@@ -106,6 +106,7 @@ def quaternion_multiplication(
     """Multiply two quaternions."""
     if quat_1.shape[-1] != 4 or quat_2.shape[-1] != 4:
         raise ValueError("Invalid quaternion shape. Expected (..., 4)")
+    # assert quat_1.shape == quat_2.shape, "Quaternions must have the same shape."
 
     w1, x1, y1, z1 = torch.unbind(quat_1, -1)
     w2, x2, y2, z2 = torch.unbind(quat_2, -1)

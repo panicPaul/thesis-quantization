@@ -41,7 +41,7 @@ from thesis.data_management.data_classes import (
     UnbatchedFlameParams,
     UnbatchedSE3Transform,
 )
-from thesis.flame import FlameHeadWithInnerMouth
+from thesis.flame import FlameHeadVanilla, FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
     point_cloud_initialization,
@@ -115,7 +115,14 @@ class DynamicGaussianSplatting(pl.LightningModule):
         self.register_buffer("canonical_flame_jaw", canonical_flame_params.jaw)
         self.register_buffer("canonical_flame_eye", canonical_flame_params.eye)
         self.register_buffer("canonical_flame_scale", canonical_flame_params.scale)
-        self.flame_head = FlameHeadWithInnerMouth()
+        match self.gaussian_splatting_settings.flame_head_type:
+            case "vanilla":
+                self.flame_head = FlameHeadVanilla()
+            case "with_inner_mouth":
+                self.flame_head = FlameHeadWithInnerMouth()
+            case _:
+                raise ValueError("Unknown flame head type: "
+                                 f"{self.gaussian_splatting_settings.flame_head_type}")
 
         # Load viewer sequences
         viewer_flame_params_list = []
@@ -175,6 +182,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 self.splats = nn.ParameterDict(
                     flame_initialization(
                         flame_params=canonical_flame_params,
+                        flame_head=self.flame_head,
                         scene_scale=gaussian_splatting_settings.scene_scale,
                         feature_dim=gaussian_splatting_settings.feature_dim,
                         colors_sh_degree=gaussian_splatting_settings.sh_degree,
@@ -203,6 +211,16 @@ class DynamicGaussianSplatting(pl.LightningModule):
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
                 )
+            case "absgs":  # https://arxiv.org/abs/2404.10484
+                self.strategy = DefaultStrategy(
+                    refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
+                    refine_stop_iter=refine_stop_iteration,
+                    verbose=True,
+                    absgrad=True,
+                    revised_opacity=True,  # https://arxiv.org/abs/2404.06109
+                    grow_grad2d=0.0004,
+                    pause_refine_after_reset=16,
+                )
             case "monte_carlo_markov_chain":
                 self.strategy = MCMCStrategy(
                     refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
@@ -227,6 +245,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                     radius_clip=gaussian_splatting_settings.radius_clip,
                     rasterize_mode="antialiased"
                     if gaussian_splatting_settings.antialiased else "default",
+                    absgrad=True,
                 )
             case "2dgs":
                 self.rasterize = partial(
@@ -316,11 +335,12 @@ class DynamicGaussianSplatting(pl.LightningModule):
 
         # ---> other optimizers
         pre_processor_optimizer = self.pre_processor.setup_optimizer()
+        other_optimizers = []
+        if pre_processor_optimizer is not None:
+            other_optimizers = [pre_processor_optimizer]
         post_processor_optimizer = self.post_processor.setup_optimizer()
         if post_processor_optimizer is not None:
-            other_optimizers = [pre_processor_optimizer, post_processor_optimizer]
-        else:
-            other_optimizers = [pre_processor_optimizer]
+            other_optimizers.append(post_processor_optimizer)
         optimizer_list = list(splat_optimizers.values()) + other_optimizers
         self.n_optimizers = len(optimizer_list)
 
@@ -434,6 +454,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             means = _means_override.cuda()
 
         # rasterization
+        # TODO: do batch for loop option to avoid memory issues
         ret = self.rasterize(
             means=means,
             quats=quats,
@@ -445,7 +466,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             Ks=intrinsics,
             width=image_width,
             height=image_height,
-            absgrad=self.gaussian_splatting_settings.densification_mode == 'default',
+            # absgrad=self.gaussian_splatting_settings.densification_mode == 'default' ,
             sh_degree=cur_sh_degree
             if not self.gaussian_splatting_settings.use_view_dependent_color_mlp else None,
             packed=False,
@@ -553,6 +574,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             flame_params=flame_params,
             windowed_rigging_params=windowed_rigging_params,
             audio_features=audio_features,
+            cur_sh_degree=self.max_sh_degree,
         )
 
         if render_mode == 'color':
@@ -661,6 +683,12 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 infos['per_gaussian_movement'],
                 on_step=True,
                 on_epoch=False)
+        if 'per_gaussian_color_adjustment' in infos:
+            self.log(
+                'per_gaussian_color_adjustment',
+                infos['per_gaussian_color_adjustment'],
+                on_step=True,
+                on_epoch=False)
         self.log('num_gaussians', self.splats['means'].shape[0], on_step=True, on_epoch=False)
 
         # Backward pass and optimization
@@ -671,7 +699,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
 
         # Post-backward densification
         match self.gaussian_splatting_settings.densification_mode:
-            case "default":
+            case "default" | "absgs":
                 self.strategy.step_post_backward(
                     params=self.splats,
                     optimizers=splat_optimizers,
@@ -1127,6 +1155,8 @@ def training_loop(config_path: str) -> None:
         n_cameras_per_frame=config.gaussian_splatting_settings.camera_batch_size,
         window_size=config.gaussian_splatting_settings.prior_window_size,
         image_downsampling_factor=config.gaussian_splatting_settings.image_downsampling_factor,
+        over_sample_open_jaw=config.gaussian_splatting_settings.over_sample_open_jaw,
+        over_sample_probability=config.gaussian_splatting_settings.over_sample_probability,
     )
     train_loader = DataLoader(
         train_set,

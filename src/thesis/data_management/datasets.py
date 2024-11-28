@@ -1,5 +1,6 @@
 """ Single sequence datasets. """
 
+import numpy as np
 import torch
 from jaxtyping import Float
 from torch.utils.data import Dataset
@@ -124,6 +125,8 @@ class MultiSequenceDataset(Dataset):
         n_cameras_per_frame: int | None = None,
         data_dir: str = DATA_DIR_NERSEMBLE,
         window_size: int = 1,
+        over_sample_open_jaw: bool = False,
+        over_sample_probability: float = 0.5,
     ) -> None:
         """
         Args:
@@ -134,6 +137,9 @@ class MultiSequenceDataset(Dataset):
             n_cameras_per_frame (int | None): Number of cameras per frame. If None,
                 all cameras are used. Otherwise they are randomly sampled.
             data_dir (str): Directory containing the data.
+            window_size (int): Size of the window around the frame.
+            over_sample_open_jaw (bool): Whether to over-sample frames with open jaw.
+            over_sample_probability (float): Probability of over-sampling frames with open jaw.
         """
 
         self.msm = MultiSequenceManager(
@@ -144,15 +150,34 @@ class MultiSequenceDataset(Dataset):
         )
         self.n_cameras_per_frame = n_cameras_per_frame
         self.window_size = window_size
+        self.over_sample_open_jaw = over_sample_open_jaw
+        self.over_sample_probability = over_sample_probability
 
     def __len__(self) -> int:
         return len(self.msm)
+
+    def _over_sample(self, sequence_idx: int, frame_idx: int) -> int:
+        """
+        Over-sample frames with open jaw.
+
+        Args:
+            sequence_idx (int): Sequence index.
+            frame_idx (int): Frame index.
+
+        Returns:
+            int: New frame index drawn from the distribution induced by the jaw pose.
+        """
+        probs = self.msm[sequence_idx].jaw_sample_probs.numpy()
+        sample = np.random.choice(np.arange(len(probs)), p=probs)
+        return int(sample)
 
     def __getitem__(
         self, idx: int
     ) -> tuple[dc.SingleFrameData, dc.UnbatchedFlameParams, Float[torch.Tensor, "time 1024"]]:
         """ Get a single frame and flame and audio prior information. """
         sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
+        if self.over_sample_open_jaw and torch.rand(1).item() < self.over_sample_probability:
+            frame_idx = self._over_sample(sequence_idx, frame_idx)
         single_frame = self.msm[sequence_idx].get_single_frame(frame_idx, self.n_cameras_per_frame)
         window_indices = slice(
             max(frame_idx - self.window_size // 2, 0),

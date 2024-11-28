@@ -1,6 +1,9 @@
 # Speech-driven Face Synthesis with 3D Gaussian Splatting
 Repo for my master thesis.
 
+# TODO:
+- try to overfit on open mouth images somehow
+
 ## Abstract
 TODO
 

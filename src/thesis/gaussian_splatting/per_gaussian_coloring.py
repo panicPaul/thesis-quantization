@@ -53,7 +53,7 @@ class _Squasher(nn.Module):
         return x.squeeze(0).squeeze(-1)  # (out_dim)
 
 
-class PerGaussianDeformations(nn.Module):
+class PerGaussianColoring(nn.Module):
 
     def __init__(
         self,
@@ -76,7 +76,7 @@ class PerGaussianDeformations(nn.Module):
             mlp_layers (int): The number of layers in the mlp.
             mlp_hidden_size (int): The hidden size of the mlp.
             use_audio_code_book (bool): Whether to use audio code book. Defaults to False.
-            n_vertices (int): The number of vertices in the mesh. Defaults to 5443.
+            n_vertices (int): The number of vertices. Defaults to 5443.
         """
         super().__init__()
         self.window_size = window_size
@@ -86,7 +86,7 @@ class PerGaussianDeformations(nn.Module):
         self.use_rigging_params = use_rigging_params
 
         # input
-        input_size = 14 + per_gaussian_latent_dim  # 14 for 6dof position and adjustment
+        input_size = per_gaussian_latent_dim + 7  # 4 rotation, 3 translation
         if use_audio_features and not use_audio_code_book:
             input_size += 32
             self.audio_squasher = _Squasher(
@@ -121,7 +121,7 @@ class PerGaussianDeformations(nn.Module):
         if use_rigging_params:
             input_size += 32
             self.rigging_squasher = _Squasher(
-                input_size=n_vertices * 3,
+                input_size=n_vertices * 3,  # 5443 vertices
                 hidden_size=256,
                 output_size=256,
                 n_layers=3,
@@ -139,7 +139,7 @@ class PerGaussianDeformations(nn.Module):
         for _ in range(mlp_layers - 2):
             mlp_layer_list.append(nn.Linear(mlp_hidden_size, mlp_hidden_size))
             mlp_layer_list.append(nn.SiLU())
-        mlp_layer_list.append(nn.Linear(mlp_hidden_size, 7))
+        mlp_layer_list.append(nn.Linear(mlp_hidden_size, 3))
         self.mlp = nn.Sequential(*mlp_layer_list)
 
     def forward(
@@ -150,10 +150,9 @@ class PerGaussianDeformations(nn.Module):
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         rigging_params: Float[torch.Tensor, "window n_vertices 3"] | None = None,
-    ) -> tuple[Float[torch.Tensor, 'n_gaussians 4'], Float[torch.Tensor, 'n_gaussians 3']]:
+    ) -> Float[torch.Tensor, 'n_gaussians 3']:
         """
-        Computes the final adjustments to the per gaussian means and quaternions. Returns the
-        *adjustments* not the final means and quaternions.
+        Computes the color adjustments.
 
         Args:
             splats (dict): The splats.
@@ -166,15 +165,12 @@ class PerGaussianDeformations(nn.Module):
                 `(window, n_vertices, 3)`.
 
         Returns:
-            tuple: A tuple containing
-                - (*torch.Tensor*): The rotation adjustments. Has shape `(n_gaussians, 4)`.
-                - (*torch.Tensor*): The translation adjustments. Has shape `(n_gaussians, 3)`.
+            torch.Tensor: The color adjustments. Has shape `(n_gaussians, 3)`.
         """
 
-        means = splats['means']
-        quats = splats['quats']
         features = splats['features']
-        input_list = [means, quats, features, rigged_rotation, rigged_translation]
+        means = splats['means']
+        input_list = [features, rigged_rotation, rigged_translation]
 
         if self.use_audio_features and not self.use_audio_code_book:
             audio_features = self.audio_squasher(audio_features)  # (32)
@@ -209,9 +205,5 @@ class PerGaussianDeformations(nn.Module):
             input_list.append(rigging_features)
 
         input_tensor = torch.concatenate(input_list, dim=-1)
-        adjustments = self.mlp.forward(input_tensor)
-        rotation_adjustments = adjustments[..., :4]
-        rotation_adjustments = nn.functional.normalize(rotation_adjustments, p=2, dim=-1)
-        translation_adjustments = adjustments[..., 4:] * 1e-4
-
-        return rotation_adjustments, translation_adjustments
+        color_adjustments = self.mlp.forward(input_tensor)
+        return color_adjustments

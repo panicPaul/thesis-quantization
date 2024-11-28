@@ -16,6 +16,7 @@ class FlameKNN(nn.Module):
     def __init__(
         self,
         k: int,
+        flame_head: FlameHead,
         canonical_params: UnbatchedFlameParams | tuple = CANONICAL_FLAME_PARAMS,
     ) -> None:
         """
@@ -27,7 +28,6 @@ class FlameKNN(nn.Module):
         self.register_buffer('position_cache', None)  # (n_gaussians, 3)
         self.register_buffer('recompute_distance_cache', None)  # (n_gaussians, )
         self.register_buffer('index_cache', None)  # (n_gaussians, k)
-        flame_head = FlameHead()
         canonical_params = UnbatchedFlameParams(*canonical_params)
         flame_head.to(canonical_params.expr.device)
         canonical_vertices = flame_head.forward(canonical_params)

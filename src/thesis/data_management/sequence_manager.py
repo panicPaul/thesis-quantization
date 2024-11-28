@@ -105,6 +105,11 @@ class SequenceManager:
             cleaned=False,  # DO NOT CHANGE!
         )
 
+        # Compute the jaw norms and save the resulting sorted indices
+        jaw_norms = torch.norm(self.flame_params[:].jaw, dim=-1)
+        self.jaw_norms_sorted_indices = torch.argsort(jaw_norms, descending=True)
+        self.jaw_sample_probs = jaw_norms / jaw_norms.sum()
+
     def __len__(self) -> int:
         return len(self.frames)
 
