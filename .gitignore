@@ -10,6 +10,7 @@ tmp
 tb_logs
 assets/pointcloud_s03_f218.pcd
 data
+render_logs
 
 # ------------ General Python ------------
 # Byte-compiled / optimized / DLL files
