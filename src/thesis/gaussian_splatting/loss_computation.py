@@ -143,12 +143,7 @@ class LossComputer(nn.Module):
             max_scale_loss = f()
             loss_dict["max_scale_loss"] = max_scale_loss
             loss = loss + max_scale_loss * self.gaussian_splatting_settings.max_scale_loss
-        # distloss
-        if (self.gaussian_splatting_settings.dist_loss is not None and
-                self.gaussian_splatting_settings.rasterization_mode == '2dgs'):
-            distloss = infos['render_distort'].mean()
-            loss_dict["render_distort"] = distloss
-            loss = loss + distloss * self.gaussian_splatting_settings.dist_loss
+
         # face nose l1
         if self.gaussian_splatting_settings.face_nose_l1_loss is not None:
             face_mask = torch.where(segmentation_classes == 3, 1, 0)
@@ -275,6 +270,43 @@ class LossComputer(nn.Module):
             eyebrows_ssim_loss = 1 - self.ssim(pred, tgt).mean()
             loss_dict["eyebrows_ssim"] = eyebrows_ssim_loss
             loss = loss + eyebrows_ssim_loss * self.gaussian_splatting_settings.eyebrows_ssim_loss
+        # 2DGS Render distortion regularization
+        if self.gaussian_splatting_settings.render_distortion_loss_2dgs is not None and \
+                self.gaussian_splatting_settings.rasterization_mode == '2dgs':
+            render_distort = infos['render_distort'].mean()
+            loss_dict["render_distort"] = render_distort
+            loss = loss + render_distort * self.gaussian_splatting_settings.render_distortion_loss_2dgs
+        # 2DGS Normal Consistency
+        if self.gaussian_splatting_settings.normal_consistency_loss_2dgs is not None and \
+                self.gaussian_splatting_settings.rasterization_mode == '2dgs':
+            # adapted from gsplat
+            render_normals = infos['render_normals']
+            surface_normals = infos['surface_normals']
+            render_normals = render_normals.squeeze(0).permute((2, 0, 1))
+            if len(surface_normals.shape) == 4:
+                surface_normals = surface_normals.squeeze(0)
+            surface_normals = surface_normals.permute((2, 0, 1))
+            normal_error = (1 - (render_normals * surface_normals).sum(dim=0))[None]
+            normal_loss = normal_error.mean()
+            loss_dict["normal_loss"] = normal_loss
+            loss = loss + normal_loss * self.gaussian_splatting_settings.normal_consistency_loss_2dgs
+        # MCMC n-gaussian opacity regularization
+        if self.gaussian_splatting_settings.mcmc_opacity_loss is not None:
+            # sum of absolute values of alphas
+            opacities = splats['opacities']
+            opacities = nn.functional.sigmoid(opacities)
+            mcmc_opacity_loss = torch.abs(opacities).mean()
+            loss_dict["mcmc_opacity_loss"] = mcmc_opacity_loss
+            loss = loss + mcmc_opacity_loss * self.gaussian_splatting_settings.mcmc_opacity_loss
+        # MCMC n-gaussian volume regularization
+        if self.gaussian_splatting_settings.mcmc_opacity_loss is not None:
+            # sum of all scales
+            scales = splats['scales']
+            scales = torch.exp(scales)
+            mcmc_volume_loss = scales.mean()
+            loss_dict["mcmc_volume_loss"] = mcmc_volume_loss
+            loss = loss + mcmc_volume_loss * self.gaussian_splatting_settings.mcmc_eigenvalues_loss
+
         # PSNR (metric only)
         psnr = self.psnr.forward(raw_rendered_images, target_images)
         loss_dict["psnr"] = psnr

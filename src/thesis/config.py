@@ -71,7 +71,12 @@ class GaussianSplattingSettings:
     max_scale_loss: float | None = MISSING
     local_rigidity_loss: float | None = MISSING
     background_loss: float | None = MISSING
-    dist_loss: float | None = MISSING
+    render_distortion_loss_2dgs: float | None = MISSING
+    normal_consistency_loss_2dgs: float | None = MISSING
+    # MCMC regularizer
+    mcmc_opacity_loss: float | None = None
+    mcmc_eigenvalues_loss: float | None = None
+
     # region specific l1 losses
     face_nose_l1_loss: float | None = None
     hair_l1_loss: float | None = None
@@ -159,7 +164,9 @@ class DynamicGaussianSplattingSettings:
     max_scale_loss: float | None = MISSING
     local_rigidity_loss: float | None = MISSING
     background_loss: float | None = MISSING
-    dist_loss: float | None = MISSING
+    render_distortion_loss_2dgs: float | None = MISSING
+    normal_consistency_loss_2dgs: float | None = MISSING
+
     # region specific l1 losses
     face_nose_l1_loss: float | None = None
     hair_l1_loss: float | None = None
@@ -175,6 +182,10 @@ class DynamicGaussianSplattingSettings:
     eyes_ssim_loss: float | None = None
     inner_mouth_ssim_loss: float | None = None
     eyebrows_ssim_loss: float | None = None
+
+    # MCMC regularizer
+    mcmc_opacity_loss: float | None = None
+    mcmc_eigenvalues_loss: float | None = None
 
     # loss kwargs
     lpips_network: str = 'vgg'

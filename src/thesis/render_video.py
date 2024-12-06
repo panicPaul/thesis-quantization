@@ -1,6 +1,7 @@
 """ Renders a video."""
 
 import argparse
+import gzip
 import os
 from functools import partial
 from multiprocessing import Pool
@@ -34,7 +35,8 @@ from thesis.data_management import (
     UnbatchedFlameParams,
     UnbatchedSE3Transform,
 )
-from thesis.flame import FlameHeadWithInnerMouth
+from thesis.flame import FlameHead, FlameHeadVanilla, FlameHeadWithInnerMouth
+from thesis.flame.inverse_flame_mlp import InverseFlameMLP
 from thesis.gaussian_splatting.dynamic_model import DynamicGaussianSplatting
 from thesis.utils import assign_segmentation_class
 from thesis.video_utils import add_audio, change_audio_codec_to_aac
@@ -128,6 +130,25 @@ def audio_to_flame(
                 repeat(flame_params.eye.squeeze(0), 'n -> time n', time=n_frames).cuda()),
             scale=repeat(flame_params.scale.squeeze(0), 'n -> time n', time=n_frames).cuda(),
         )
+        # TODO: test rigging params to flame on here as well!!!
+        if False:
+            ckpt_path = 'tb_logs/vertex_to_flame/lightning_logs/version_5/checkpoints/epoch=99-step=39400.ckpt'
+            inverse_flame_model = InverseFlameMLP.load_from_checkpoint(ckpt_path)
+            inverse_flame_model.eval()
+            pred_flame_params = inverse_flame_model.forward(
+                shape_params=flame_params.shape.unsqueeze(0),
+                scale_params=flame_params.scale.unsqueeze(0),
+                neck_params=flame_params.neck.unsqueeze(0),
+                vertices=rigging_params.unsqueeze(0),
+            )
+            flame_params = UnbatchedFlameParams(
+                shape=flame_params.shape,
+                expr=pred_flame_params.expr.squeeze(0),
+                neck=flame_params.neck,
+                jaw=flame_params.jaw,
+                eye=pred_flame_params.eye.squeeze(0),
+                scale=flame_params.scale,
+            )
     return rigging_params, flame_params
 
 
@@ -262,6 +283,40 @@ def smooth_trajectory(points, method='gaussian', **kwargs):
                 "Method must be one of: 'gaussian', 'moving_average', 'savgol', 'exponential'")
 
 
+def pre_computed_audio_to_flame(
+    path: str = 'demo_vertices.pt',
+    n_frames: int | None = None,
+) -> tuple[Float[torch.Tensor, 'time n_vertices 3'], UnbatchedFlameParams]:
+    """
+    Args:
+        path: Path to the precomputed flame parameters.
+    """
+    vertices = torch.load(path)
+    n_frames = vertices.shape[0]
+    flame_params = UnbatchedFlameParams(*CANONICAL_FLAME_PARAMS)
+    flame_params = UnbatchedFlameParams(
+        shape=repeat(flame_params.shape.squeeze(0), 'n -> time n', time=n_frames).cuda(),
+        expr=torch.zeros_like(
+            repeat(flame_params.expr.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+        neck=torch.zeros_like(
+            repeat(flame_params.neck.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+        jaw=torch.zeros_like(
+            repeat(flame_params.jaw.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+        eye=torch.zeros_like(
+            repeat(flame_params.eye.squeeze(0), 'n -> time n', time=n_frames).cuda()),
+        scale=repeat(flame_params.scale.squeeze(0), 'n -> time n', time=n_frames).cuda(),
+    )
+    if n_frames is not None:
+        cur_frames = vertices.shape[0]
+        if cur_frames < n_frames:
+            vertices = torch.cat(
+                [vertices, vertices[-1].unsqueeze(0).repeat(n_frames - cur_frames, 1, 1)])
+        else:
+            vertices = vertices[:n_frames]
+
+    return vertices, flame_params
+
+
 @torch.no_grad()
 def render_video_dynamic_gaussian_splatting(
     checkpoint_path: str,
@@ -346,6 +401,8 @@ def render_video_dynamic_gaussian_splatting(
         trajectories = smooth_trajectory(trajectories, method=smoothing_mode)
     else:
         trajectories = None
+
+    # Flame params
 
     # Render video
     video = model.render_video(
@@ -460,6 +517,7 @@ def main(
     image_width: int = 1100,
     background_color: Float[torch.Tensor, '3'] = torch.tensor([0.66, 0.66, 0.66]),
     n_frames_override: int | None = None,
+    pre_computed_path: str | None = None,
 ) -> None:
     """
     Renders a video from audio.
@@ -474,6 +532,11 @@ def main(
         quicktime_compatible (bool): Whether to make the video compatible with QuickTime.
         disable_se3 (bool): Whether to disable SE3 transformations.
         smoothing_method (str): Smoothing method for the trajectory. Defaults to 'none'.
+        intrinsics (np.ndarray): Camera intrinsics. Defaults to the test view.
+        world_2_cam (np.ndarray): World to camera transformation. Defaults to the test view.
+        image_height (int): Image height. Defaults to 1604.
+        image_width (int): Image width. Defaults to 1100.
+        background_color (torch.Tensor): Background color. Defaults to [0.5, 0.5, 0.5].
     """
 
     # Set up
@@ -495,7 +558,8 @@ def main(
     if n_frames_override is not None:
         n_frames = n_frames_override
     audio_features = process_audio(audio_path, n_frames)
-    assert (audio_to_flame_checkpoint_path is not None) ^ (flame_params_sequence is not None), \
+    assert (audio_to_flame_checkpoint_path is not None) ^ (flame_params_sequence is not None) ^ (
+        pre_computed_path is not None), \
         "Either provide a checkpoint for audio-to-flame prediction or a sequence number to load " \
         "ground truth flame parameters."
     try:
@@ -512,13 +576,27 @@ def main(
         output_dir = f'{output_dir}/{smoothing_mode}'
     output_path = f'{output_dir}/{name}.mp4'
     n_frames = audio_features.shape[0]
+    print('n_frames:', n_frames)
 
     # Get rigging parameters
-    flame_head = FlameHeadWithInnerMouth()
+    match splats.gaussian_splatting_settings.flame_head_type:
+        case 'vanilla':
+            flame_head = FlameHeadVanilla()
+        case 'with_inner_mouth':
+            flame_head = FlameHeadWithInnerMouth()
+        case _:
+            raise ValueError("Invalid flame head type.")
     flame_head = flame_head.cuda()
     if audio_to_flame_checkpoint_path is not None:
         rigging_params, flame_params = audio_to_flame(audio_to_flame_checkpoint_path,
                                                       audio_features)
+    elif pre_computed_path is not None:
+        print(f'n_frames: {n_frames}')
+        rigging_params, flame_params = pre_computed_audio_to_flame(pre_computed_path, n_frames)
+        n_frames = rigging_params.shape[0]
+        print(f'n_frames: {n_frames}')
+        audio_features = audio_features[:n_frames]
+
     else:
         if not splats.gaussian_splatting_settings.use_other_guy:
             data_dir = DATA_DIR_NERSEMBLE
@@ -559,13 +637,18 @@ def main(
 
     # Save video
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(f'{output_dir}/raw_data', exist_ok=True)
+    f = gzip.GzipFile(f'{output_dir}/raw_data/{name}.npy.gz', 'w')
+    np.save(file=f, arr=video)
+    f.close()
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (image_width, image_height))
     for i in tqdm(range(len(video)), desc='Rendering video'):
         image = cv2.cvtColor(video[i], cv2.COLOR_RGB2BGR)
         out.write(image)
-
     out.release()
+
     add_audio(
         video_path=output_path,
         audio_path=audio_path,
@@ -573,7 +656,6 @@ def main(
         quicktime_compatible=quicktime_compatible,
         trim_to_fit=True,
     )
-    change_audio_codec_to_aac(output_path)
 
 
 # ============================================================================================== #
@@ -582,13 +664,12 @@ def main(
 
 if __name__ == '__main__':
     # Arguments
-    mode: Literal['flame', 'audio'
-                  'gt'] = 'audio'
+    mode: Literal['flame', 'audio', 'pre_computed', 'gt'] = 'pre_computed'
     sequence: int | None = 97
     use_other_guy = False
     quicktime_compatible: bool = False
     audio_path: str | None = None  # 'tmp/german_test.m4a'
-    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
     # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_monocular_overnight/version_1/checkpoints/epoch=7-step=800000.ckpt'  # noqa
 
     # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/other_guy_overnight/version_0/checkpoints/epoch=119-step=800000.ckpt' # noqa
@@ -596,8 +677,19 @@ if __name__ == '__main__':
     # audio_to_flame_checkpoint: str | None = None
     # audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/new_baseline_vertex_200/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
     audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/final_final_revert_default/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
+    pre_computed_path: str | None = f'saved_vertex_preds/sequence_{sequence}.pt'
+
+    ablations = [
+        '0_no_flame_prior', '1_just_flame_prior', "2_with_per_gaussian", '3_with_color_mlp',
+        '4_with_inner_mouth', '5_open_mouth_oversampling', '6_revised_densification',
+        '7_markov_chain_monte_carlo'
+    ]  # 3 and upwards work
+    # 2 file name is broken for some reason
+    cur_ablation = f'{ablations[7]}_lpips_0.01'
+    gaussian_splats_checkpoint = f'tb_logs/dynamic_gaussian_splatting/ablations/{cur_ablation}/version_0/checkpoints/epoch=3-step=400000.ckpt'
+    # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/no_flame_window/version_0/checkpoints/epoch=3-step=400000.ckpt'
     smoothing_mode: Literal['none', 'gaussian', 'moving_average', 'savgol', 'exponential'] = 'none'
-    background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 1.0
+    background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 0.66
 
     # Parse overridable arguments
     parser = argparse.ArgumentParser()
@@ -633,6 +725,7 @@ if __name__ == '__main__':
         n_frames = len(sm)
     else:
         n_frames = None
+
     if sequence is not None:
         audio_path = '../new_master_thesis/data/nersemble/Paul-audio-856/856/sequences/' \
             f'sequence_{sequence:04d}/audio/audio_recording.ogg'
@@ -643,6 +736,7 @@ if __name__ == '__main__':
     else:
         se_3_sequence = 10
         flame_params_sequence = None
+
     if use_other_guy:
         world_2_cam = torch.tensor([[-0.8541, -0.1471, -0.4988, 0.0249],
                                     [-0.3203, 0.9044, 0.2818, -0.0334],
@@ -657,6 +751,18 @@ if __name__ == '__main__':
     if False:
         # world_2_cam = get_camera_path(n_frames)
         world_2_cam = get_camera_path_circle(n_frames)
+
+    if False:
+        intrinsics = torch.tensor([[8197.498046875, 0.0, 1099.1348876953125],
+                                   [0.0, 8197.521484375, 1603.69873046875], [0.0, 0.0, 1.0]])
+        image_height = 1604 * 2
+        image_width = 1100 * 2
+    else:
+        intrinsics = torch.tensor([[4.0987e+03, 0.0000e+00, 5.4957e+02],
+                                   [0.0000e+00, 4.0988e+03, 8.0185e+02],
+                                   [0.0000e+00, 0.0000e+00, 1.0000e+00]])
+        image_height = 1604
+        image_width = 1100
 
     # Render video
     match mode:
@@ -688,6 +794,9 @@ if __name__ == '__main__':
                 background_color=background_color,
                 world_2_cam=world_2_cam,
                 output_dir='tmp/pred' if not quicktime_compatible else 'tmp/quicktime/pred',
+                intrinsics=intrinsics,
+                image_height=image_height,
+                image_width=image_width,
             )
 
         case 'audio':
@@ -704,6 +813,29 @@ if __name__ == '__main__':
                 world_2_cam=world_2_cam,
                 output_dir='tmp/pred' if not quicktime_compatible else 'tmp/quicktime/pred',
                 n_frames_override=n_frames,
+                intrinsics=intrinsics,
+                image_height=image_height,
+                image_width=image_width,
+            )
+
+        case 'pre_computed':
+            assert pre_computed_path is not None, "Precomputed path must be provided."
+            main(
+                audio_path=audio_path,
+                gaussian_splats_checkpoint_path=gaussian_splats_checkpoint,
+                audio_to_flame_checkpoint_path=None,
+                flame_params_sequence=None,
+                se_3_sequence=se_3_sequence,
+                quicktime_compatible=quicktime_compatible,
+                smoothing_method=smoothing_mode,
+                background_color=background_color,
+                world_2_cam=world_2_cam,
+                output_dir='tmp/pred' if not quicktime_compatible else 'tmp/quicktime/pred',
+                n_frames_override=n_frames,
+                intrinsics=intrinsics,
+                image_height=image_height,
+                image_width=image_width,
+                pre_computed_path=pre_computed_path,
             )
 
         case _:

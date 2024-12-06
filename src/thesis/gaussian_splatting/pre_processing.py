@@ -302,7 +302,8 @@ class RiggedPreProcessor(nn.Module):
             infos['per_gaussian_movement'] = translation_adjustments.norm(dim=-1).mean()
 
         if hasattr(self, "per_gaussian_color_adjustment"):
-            color_adjustments = self.per_gaussian_color_adjustment.forward(
+            non_adjusted_colors = nn.functional.sigmoid(colors.clone())
+            colors = self.per_gaussian_color_adjustment.forward(
                 splats=splats,
                 rigged_rotation=gaussian_rotations[:, 0],
                 rigged_translation=gaussian_translations,
@@ -310,9 +311,9 @@ class RiggedPreProcessor(nn.Module):
                 flame_params=flame_params,
                 rigging_params=windowed_rigging_params,
             )
-            colors = colors + color_adjustments
-            infos['per_gaussian_color_adjustment'] = color_adjustments.norm(dim=-1).mean()
-            colors = nn.functional.sigmoid(colors)
+            _adjusted_colors = nn.functional.sigmoid(colors.clone())
+            infos['per_gaussian_color_adjustment'] = (non_adjusted_colors
+                                                      - _adjusted_colors).norm(dim=-1).mean()
 
         # ---> SE(3) transformation
         rotation = se3_transform.rotation

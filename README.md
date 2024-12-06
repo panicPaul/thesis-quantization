@@ -1,4 +1,13 @@
 # Speech-driven Face Synthesis with 3D Gaussian Splatting
+ADD COLOR FEATURES !!!!
+
+- codetalker
+- baseline
+- monocular
+
+- direct jaw prediction
+
+
 Repo for my master thesis.
 
 # TODO:

@@ -24,13 +24,17 @@ class InverseFlameMLP(pl.LightningModule):
         super().__init__()
         self.flame_head = FlameHeadWithInnerMouth()
 
+        self.neck_embedding = nn.Sequential(nn.Linear(3, 512 * 3))
+
         self.mlp = nn.Sequential(
-            nn.Linear(n_vertices * 3, hidden_dim),
+            nn.Linear(n_vertices*3 + 512*3, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
             nn.Linear(hidden_dim, 112),
         )
 
@@ -42,12 +46,15 @@ class InverseFlameMLP(pl.LightningModule):
         self,
         shape_params: Float[torch.Tensor, "batch time 300"],
         scale_params: Float[torch.Tensor, "batch time 1"],
+        neck_params: Float[torch.Tensor, "batch time 3"],
         vertices: Float[torch.Tensor, "batch time n_vertices 3"],
     ) -> FlameParams:
         """ Forward pass. """
-
+        neck_embedding = self.neck_embedding(neck_params)
         x = vertices.reshape(vertices.shape[0], vertices.shape[1], -1)
+        x = torch.cat([x, neck_embedding], dim=-1)
         x = self.mlp(x)
+
         return FlameParams(
             shape=shape_params,
             expr=x[..., :100],
@@ -70,7 +77,8 @@ class InverseFlameMLP(pl.LightningModule):
         neck_loss = torch.nn.functional.mse_loss(prediction.neck, target.neck)
         jaw_loss = torch.nn.functional.mse_loss(prediction.jaw, target.jaw)
         eye_loss = torch.nn.functional.mse_loss(prediction.eye, target.eye)
-        loss = vertex_loss + expr_loss + neck_loss + jaw_loss + eye_loss
+        loss = expr_loss + neck_loss + jaw_loss + eye_loss
+        # loss = expr_loss
         return {
             "loss": loss,
             "vertex_loss": vertex_loss,
@@ -93,6 +101,7 @@ class InverseFlameMLP(pl.LightningModule):
         prediction = self.forward(
             shape_params=flame_params.shape,
             scale_params=flame_params.scale,
+            neck_params=flame_params.neck,
             vertices=vertices,
         )
         losses = self.compute_loss(prediction, flame_params)
@@ -113,6 +122,7 @@ class InverseFlameMLP(pl.LightningModule):
         prediction = self.forward(
             shape_params=flame_params.shape,
             scale_params=flame_params.scale,
+            neck_params=flame_params.neck,
             vertices=vertices,
         )
         losses = self.compute_loss(prediction, flame_params)

@@ -87,6 +87,7 @@ class PerGaussianColoring(nn.Module):
 
         # input
         input_size = per_gaussian_latent_dim + 7  # 4 rotation, 3 translation
+        input_size += 3 + 3  # color and mean
         if use_audio_features and not use_audio_code_book:
             input_size += 32
             self.audio_squasher = _Squasher(
@@ -170,7 +171,8 @@ class PerGaussianColoring(nn.Module):
 
         features = splats['features']
         means = splats['means']
-        input_list = [features, rigged_rotation, rigged_translation]
+        colors = splats['colors']
+        input_list = [features, rigged_rotation, rigged_translation, means, colors]
 
         if self.use_audio_features and not self.use_audio_code_book:
             audio_features = self.audio_squasher(audio_features)  # (32)
@@ -206,4 +208,5 @@ class PerGaussianColoring(nn.Module):
 
         input_tensor = torch.concatenate(input_list, dim=-1)
         color_adjustments = self.mlp.forward(input_tensor)
-        return color_adjustments
+        colors = colors + color_adjustments
+        return colors

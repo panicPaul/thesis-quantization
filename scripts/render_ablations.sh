@@ -2,11 +2,11 @@
 
 # Define the ablations array
 ablations=(
-    "0_no_flame_prior"
-    "1_just_flame_prior"
-    "2_with_per_gaussian"
+    #"0_no_flame_prior"
+    #"1_just_flame_prior"
+    #"2_with_per_gaussian"
     "3_with_color_mlp"
-    "4_flame_inner_mouth"
+    "4_with_inner_mouth"
     "5_open_mouth_oversampling"
     "6_revised_densification"
     "7_markov_chain_monte_carlo"
@@ -50,7 +50,7 @@ for ablation in "${ablations[@]}"; do
     if [ ! -f "$ablation_path" ]; then
         log_message "Warning: Checkpoint not found at $ablation_path"
         continue
-    }
+    fi
 
     # Process each sequence
     for seq in {80..101}; do

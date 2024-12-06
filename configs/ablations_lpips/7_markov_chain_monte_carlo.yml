@@ -1,0 +1,141 @@
+
+name: ablations/7_markov_chain_monte_carlo_lpips_0.01
+# port 51881
+
+# ---> gaussian splatting settings
+gaussian_splatting_settings:
+
+  # pre-processing settings
+  flame_head_type: with_inner_mouth
+  use_view_dependent_color_mlp: true
+  rasterization_mode: 3dgs
+  prior_window_size: 21 # two thirds of a second
+  per_gaussian_motion_adjustment: true
+  per_gaussian_motion_adjustment_use_audio: false
+  per_gaussian_motion_adjustment_use_flame: true
+  per_gaussian_motion_adjustment_use_rigging: true
+
+  per_gaussian_coloring_adjustment: true
+  per_gaussian_coloring_adjustment_use_audio: false
+  per_gaussian_coloring_adjustment_use_flame: true
+  per_gaussian_coloring_adjustment_use_rigging: true
+
+  learnable_shader: false
+
+  # rasterization_settings
+  sh_degree: 3
+  radius_clip: 0.3
+
+
+  # post-processing settings
+  background_r: 0.66
+  background_g: 0.66
+  background_b: 0.66
+  screen_space_denoising_mode: none
+  learnable_color_correction: true
+
+
+  # densification_settings
+  densification_mode: monte_carlo_markov_chain
+  # densification_mode: default
+  refine_start_iteration: 250
+
+  refine_stop_iteration: 25_000
+  train_iterations: 50_000
+  lpips_start_iteration: 10_000
+
+  cap_max: 250_000
+  screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
+  image_downsampling_factor: 1.0
+
+
+  # initialization settings
+  # initialization_mode: point_cloud
+  initialization_mode: flame
+  # initialization_mode: pre_trained
+  initialization_points: 30_000
+  initialization_checkpoint: tb_logs/single_frame/3dgs/version_0/checkpoints/epoch=24-step=100000.ckpt
+
+  # losses
+  l1_image_loss: 1.0
+  # ssim_image_loss: 0.1
+  ssim_image_loss: 0.2
+  ssim_denoised_image_loss: null
+  lpips_image_loss: 0.01 #0.01 #0.003 #0.001 #0.05 is causing significant artifacts # 1e-3 seems too small tho
+  # lpips_image_loss: null
+  anisotropy_loss: 0.1
+  max_scale_loss: null
+  local_rigidity_loss: null
+  background_loss: 0.1
+  dist_loss: null
+  # dist_loss: null
+  # region specific losses
+  hair_l1_loss: null
+  hair_ssim_loss: null
+  eyebrows_l1_loss: null
+  eyebrows_ssim_loss: null
+  lips_l1_loss: null
+  lips_ssim_loss: null
+  neck_l1_loss: null
+  inner_mouth_l1_loss: 0.5
+  inner_mouth_ssim_loss: 0.0
+  eyes_l1_loss: null
+  eyes_ssim_loss: null
+
+  # kwargs
+  lpips_network: 'alex'
+
+  # train settings
+  feature_dim: 32
+  camera_batch_size: 1 # anything more than 2 is going to be out of memory
+  log_images_interval: 250
+  shuffle_train_data: true # keep at true, trade-off not worth it
+  over_sample_open_jaw: true
+  over_sample_probability: 0.5
+#   image_downsampling_factor: 2.0
+
+# ---> Learning Rates
+learning_rates:
+  # --> 3D Splatting
+  means_lr: 1.6e-4
+  scales_lr: 5e-3
+  quats_lr: 1e-3
+  opacities_lr: 5e-2
+  features_lr: 2.5e-3
+  # colors
+  sh0_lr: 2.5e-3 # shN is 1/20 of sh0
+  color_lr: 2.5e-3
+  # Color MLP
+  color_mlp_lr: 1e-3
+  color_mlp_weight_decay: 1e-6
+  # shader
+  learnable_shader_lr: 1e-3
+  # deformation
+  per_gaussian_deformations_lr: 1e-3
+  per_gaussian_color_adjustment_lr: 1e-3
+
+  # color correction
+  color_correction_lr: 1e-5
+
+
+  # --> pre_processing
+  rigging_params_flame_vertices_lr: 1e-3
+  rigging_params_inner_mouth_vertices_lr: 1e-3
+  motion_adjustment_lr: 3e-4
+  rotation_and_scale_adjustment_lr: 3e-4
+
+  # --> post_processing
+  learnable_color_correction_lr: 1e-5
+  screen_space_denoiser_lr: 1e-3
+
+# ---> Random other stuff
+compile: true
+viewer_port: 8080
+train_sequences: null
+val_sequences: null
+frame: 42
+num_train_workers: 12
+num_val_workers: 4
+tensorboard_dir: logs
+enable_viewer: true
+data_dir: null

@@ -1,6 +1,8 @@
 """ Video utilities for thesis project. """
 
+import gzip
 import os
+import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple
@@ -12,14 +14,10 @@ import pydub
 import soundfile as sf
 import torch
 from jaxtyping import Float, Int, UInt8
-from moviepy.editor import (
-    AudioFileClip,
-    VideoFileClip,
-    clips_array,
-    concatenate_videoclips,
-)
+from moviepy import AudioFileClip, VideoFileClip, clips_array, concatenate_videoclips
 
 from thesis.audio_feature_processing.audio_cleaning import pydub_to_np
+from thesis.data_management import SequenceManager
 
 
 def add_audio(
@@ -83,7 +81,7 @@ def add_audio(
     audio = AudioFileClip(temp_audio_path)
 
     # Set the audio of the video
-    final_video = video.set_audio(audio)
+    final_video = video.with_audio(audio)
 
     if not quicktime_compatible:
         # Write the result, overwriting the original file
@@ -540,3 +538,165 @@ def change_audio_codec_to_aac(video_path: str) -> None:
                 video.close()
             except:  # noqa
                 pass
+
+
+def get_audio(
+    sequence: int | str,
+    window_size: int = 21,
+) -> tuple[np.ndarray, int]:
+    """
+    Get the audio from the given sequence number.
+
+    Args:
+        sequence: Sequence number or path to audio file
+        n_frames: Number of frames in the video (required if sequence is not an integer)
+        window_size: Size of the audio window
+    Returns:
+        Tuple of (audio, sample_rate)
+    """
+    if isinstance(sequence, int):
+        audio_path = get_audio_path(sequence)
+        sm = SequenceManager(sequence)
+        n_frames = sm.audio_features[:].shape[0]
+    else:
+        audio_path = sequence
+        audio_length = pydub.AudioSegment.from_file(audio_path).duration_seconds
+        n_frames = int(audio_length * 30)
+    audio, sample_rate = sf.read(audio_path)
+    trim_size_seconds = (window_size//2) / 30
+    trim_size_samples = int(trim_size_seconds * sample_rate)
+    audio = audio[trim_size_samples:-trim_size_samples]
+    duration_frames = (n_frames-window_size+1) / 30
+    duration_audio = len(audio) / sample_rate
+    # assert abs(duration_frames- duration_audio) < 1e-3, \
+    #     f"Duration mismatch: {duration_frames}s for frames vs {duration_audio} audio samples"
+    if abs(duration_frames - duration_audio) > 1e-3:
+        print(
+            f"Duration mismatch: {duration_frames:.2f}s for frames vs {duration_audio:.2f} audio samples"
+        )
+    return audio, sample_rate
+
+
+def write_video_high_quality(frames: np.ndarray,
+                             audio: np.ndarray,
+                             output_path: str,
+                             sample_rate: Optional[int],
+                             fps: int = 30,
+                             crf: int = 1) -> None:
+    """
+    Write high quality video from numpy array with shape (time, height, width, 3) and dtype uint8,
+    incorporating audio from either a file path or numpy array.
+
+    Args:
+        frames: np.ndarray with shape (T, H, W, 3) and dtype uint8
+        audio: np.ndarray with audio samples
+        output_path: str, path to save the video
+        sample_rate: int
+        fps: int, frames per second (default: 30)
+        crf: int, quality setting (0-51, lower is better, 17 is visually lossless, 23 is default)
+    """
+    assert frames.ndim == 4 and frames.shape[3] == 3, "Input must be NHWC format"
+    assert frames.dtype == np.uint8, "Input must be uint8"
+
+    # Create temporary directory for raw data and intermediate files
+    with tempfile.TemporaryDirectory() as temp_dir:
+        raw_video = os.path.join(temp_dir, 'frames.raw')
+        temp_video = os.path.join(temp_dir, 'temp_video.mp4')
+
+        # Normalize audio to prevent clipping
+        audio = audio.astype(np.float32)
+        audio = audio / (np.abs(audio).max() + 1e-8)
+
+        # Convert to 16-bit PCM
+        audio = (audio * 32767).astype(np.int16)
+
+        # Write temporary WAV file
+        audio_path = os.path.join(temp_dir, 'temp_audio.wav')
+        import soundfile as sf
+        sf.write(audio_path, audio, sample_rate)
+
+        # Write raw video bytes
+        frames.tofile(raw_video)
+
+        # Get dimensions
+        num_frames, height, width, _ = frames.shape
+
+        # First pass: Create video without audio
+        video_cmd = [
+            'ffmpeg', '-y', '-f', 'rawvideo', '-pixel_format', 'rgb24', '-video_size',
+            f'{width}x{height}', '-framerate',
+            str(fps), '-i', raw_video, '-c:v', 'libx264', '-preset', 'veryslow', '-crf',
+            str(crf), '-pix_fmt', 'yuv420p', temp_video
+        ]
+
+        # Second pass: Combine video with audio
+        combine_cmd = [
+            'ffmpeg', '-y', '-i', temp_video, '-i', audio_path, '-c:v', 'copy', '-c:a', 'aac',
+            '-b:a', '192k', output_path
+        ]
+
+        try:
+            # Create video without audio
+            subprocess.run(video_cmd, check=True, capture_output=True)
+            print("Successfully created video without audio")
+
+            # Add audio to video
+            subprocess.run(combine_cmd, check=True, capture_output=True)
+            print(f"Successfully wrote video with audio to {output_path}")
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error running FFmpeg: {e.stderr.decode()}")
+            raise
+
+
+def render_all_hq(
+        directory: str,
+        fps: int = 30,
+        crf: int = 1,
+        sequences: list[int] = list(range(80, 102)),
+) -> None:
+    """
+    Render all videos in a directory with high quality settings.
+
+    """
+    output_dir = os.path.join(directory, 'high_quality')
+    data_dir = os.path.join(directory, 'raw_data')
+    os.makedirs(output_dir, exist_ok=True)
+
+    for sequence in sequences:
+        output_path = os.path.join(output_dir, f'sequence_{sequence}.mp4')
+        data_path = os.path.join(data_dir, f'sequence_{sequence}.npy.gz')
+        f = gzip.GzipFile(data_path, 'r')
+        frames = np.load(f)
+        audio, sample_rate = get_audio(sequence)
+        try:
+            write_video_high_quality(
+                frames=frames,
+                audio=audio,
+                output_path=output_path,
+                sample_rate=sample_rate,
+                fps=fps,
+                crf=crf)
+            print(f"Successfully rendered high quality video for sequence {sequence}")
+        except:
+            print(f"Error rendering high quality video for sequence {sequence}")
+
+
+# =============================================================================
+
+if __name__ == '__main__':
+    # ablations = [
+    #     "0_no_flame_prior", "1_just_flame_prior", "2_with_per_gaussian", "3_with_color_mlp",
+    #     "4_flame_inner_mouth", "5_open_mouth_oversampling", "6_revised_densification",
+    #     "7_markov_chain_monte_carlo", "8_2dgs", "9_with_per_gaussian_audio"
+    # ]
+    # for cur_ablation in ablations:
+    #     path = f'tmp/pred/ablations/{cur_ablation}/flame'
+    #     try:
+    #         render_all_hq(path)
+    #     except:
+    #         print(f"Error rendering high quality videos for ablation {cur_ablation}")
+
+    path = 'tmp/pred/no_flame_window/audio'
+    path = 'tmp/pred/ablations/7_markov_chain_monte_carlo_lpips_0.01/pre_computed'
+    render_all_hq(path, sequences=[86, 97])

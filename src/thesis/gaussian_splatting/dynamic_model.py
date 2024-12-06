@@ -217,7 +217,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
                     absgrad=True,
-                    revised_opacity=True,  # https://arxiv.org/abs/2404.06109
+                    #revised_opacity=True,  # https://arxiv.org/abs/2404.06109
                     grow_grad2d=0.0004,
                     pause_refine_after_reset=16,
                 )
@@ -227,6 +227,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
                     cap_max=gaussian_splatting_settings.cap_max,
+                    noise_lr=5e4,
+                    min_opacity=0.05,  # order of
                 )
             case _:
                 raise ValueError("Unknown densification mode: "
@@ -251,7 +253,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 self.rasterize = partial(
                     rasterization_2dgs,
                     radius_clip=gaussian_splatting_settings.radius_clip,
-                    distloss=gaussian_splatting_settings.dist_loss is not None,
+                    distloss=True,
                     depth_mode='median',
                 )
             case _:
@@ -454,7 +456,6 @@ class DynamicGaussianSplatting(pl.LightningModule):
             means = _means_override.cuda()
 
         # rasterization
-        # TODO: do batch for loop option to avoid memory issues
         ret = self.rasterize(
             means=means,
             quats=quats,
@@ -471,11 +472,15 @@ class DynamicGaussianSplatting(pl.LightningModule):
             if not self.gaussian_splatting_settings.use_view_dependent_color_mlp else None,
             packed=False,
         )
+
         match self.gaussian_splatting_settings.rasterization_mode:
             case "default" | "3dgs":
                 images, alphas, new_infos = ret
             case "2dgs":
-                images, alphas, _, _, _, _, new_infos = ret
+                images, alphas, render_normals, surface_normals, render_distort, _, new_infos = ret
+                infos['render_normals'] = render_normals
+                infos['surface_normals'] = surface_normals
+                infos['render_distort'] = render_distort
         infos = infos | new_infos
         depth_maps = images[:, :, :, 3:]  # get depth maps
         images = images[:, :, :, :3]  # get RGB channels
@@ -1030,7 +1035,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
 
         window_size = self.gaussian_splatting_settings.prior_window_size
         n_frames = len(intrinsics)
-        assert se_transforms.rotation.shape[0] == n_frames
+        assert se_transforms.rotation.shape[0] == n_frames, \
+            f"Expected {n_frames} frames, got {se_transforms.rotation.shape[0]} frames."
         assert rigging_params.shape[0] == n_frames
         if world_2_cam is not None and world_2_cam.ndim == 3:
             assert world_2_cam.shape[0] == n_frames

@@ -1,7 +1,7 @@
 """ Constants for the project. """
 import torch
 
-DATA_DIR_NERSEMBLE = "../new_master_thesis/data/nersemble/Paul-audio-856/856"
+DATA_DIR_NERSEMBLE = "/home/schlack/new_master_thesis/data/nersemble/Paul-audio-856/856"
 """
 Directory containing the data for the NERsemble project.
 """
@@ -30,14 +30,14 @@ TRAIN_SEQUENCES = list(range(3, 80))
 TEST_SEQUENCES = list(range(80, 102))
 
 # flame constants
-FLAME_MESH_PATH = "assets/flame/head_template_mesh.obj"
+FLAME_MESH_PATH = "/home/schlack/thesis-quantization/assets/flame/head_template_mesh.obj"
 """ Path to the FLAME head template mesh. """
-FLAME_LMK_PATH = "assets/flame/landmark_embedding_with_eyes.npy"
+FLAME_LMK_PATH = "/home/schlack/thesis-quantization/assets/flame/landmark_embedding_with_eyes.npy"
 """ Path to the FLAME landmark embedding. """  # do I even need this?
 # can be downloaded from https://flame.is.tue.mpg.de/download.php
-FLAME_MODEL_PATH = "assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw rotation)
+FLAME_MODEL_PATH = "/home/schlack/thesis-quantization/assets/flame/flame2023.pkl"  # FLAME 2023 (versions w/ jaw rotation)
 """ Path to the FLAME model. """
-FLAME_PARTS_PATH = "assets/flame/FLAME_masks.pkl"  # FLAME Vertex Masks
+FLAME_PARTS_PATH = "/home/schlack/thesis-quantization/assets/flame/FLAME_masks.pkl"  # FLAME Vertex Masks
 """ Path to the FLAME parts. """
 
 # should all be from the same sequence and timestep
