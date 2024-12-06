@@ -31,6 +31,8 @@ class GaussianSplattingSettings:
     per_gaussian_coloring_adjustment_use_flame: bool = False
     per_gaussian_coloring_adjustment_use_rigging: bool = False
 
+    spherical_interpolation_mlp: bool = True
+
     audio_latent_dim: int = 8
 
     flame_head_type: str = 'with_inner_mouth'
@@ -105,7 +107,11 @@ class GaussianSplattingSettings:
 
 @dataclass
 class DynamicGaussianSplattingSettings:
+
     # pre-processing settings
+    use_implicit_sequence_adjustment: bool = False
+    implicit_sequence_adjustment_start_iteration: int = 3_000
+
     flame_deformation_field: bool = True
     flame_head_type: str = 'with_inner_mouth'
     use_view_dependent_color_mlp: bool = True
@@ -120,6 +126,8 @@ class DynamicGaussianSplattingSettings:
     per_gaussian_coloring_adjustment_use_audio: bool = False
     per_gaussian_coloring_adjustment_use_flame: bool = False
     per_gaussian_coloring_adjustment_use_rigging: bool = False
+
+    spherical_interpolation_mlp: bool = True
 
     learnable_shader: bool = False
 

@@ -60,6 +60,7 @@ class GaussianSplats(TypedDict):
     features: Float[nn.Parameter, "n_splats feature_dim"]
     sh0: Float[nn.Parameter, "n_splats 1 3"]
     shN: Float[nn.Parameter, "n_splats shs 3"]
+    static_offsets: Float[nn.Parameter, "n_splats 3"]
 
 
 # ==================================================================================== #

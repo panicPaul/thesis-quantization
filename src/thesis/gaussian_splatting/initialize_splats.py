@@ -8,7 +8,7 @@ from thesis.data_management import (
     UnbatchedFlameParams,
     load_point_cloud,
 )
-from thesis.flame import FlameHead
+from thesis.flame import FlameHead, FlameHeadWithInnerMouth
 
 # from torch_geometric.nn import knn
 
@@ -66,6 +66,7 @@ def random_initialization(
     means = nn.Parameter(scene_scale * (torch.rand((num_splats, 3)) * 2 - 1))
     quats = nn.Parameter(torch.rand((num_splats, 4)))
     opacities = nn.Parameter(torch.logit(torch.full((num_splats,), initial_opacity)))
+    static_offsets = nn.Parameter(torch.zeros((num_splats, 3)))
 
     # Compute scales based on the average distance to the 3-nearest neighbors
     sender, receiver = knn(means, means, k=4)
@@ -80,7 +81,7 @@ def random_initialization(
         scales=scales,
         quats=quats,
         opacities=opacities,
-    )
+        static_offsets=static_offsets)
 
     if feature_dim is not None:
         splats["features"] = nn.Parameter(torch.randn((num_splats, feature_dim)))
@@ -92,7 +93,9 @@ def random_initialization(
         splats["sh0"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, :1, :]))
         splats["shN"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, 1:, :]))
     else:
-        splats['colors'] = nn.functional.sigmoid(nn.Parameter(torch.randn((num_splats, 3))))
+        colors = torch.randn((num_splats, 3)).clamp(0, 1)
+        colors = torch.logit(colors)
+        splats['colors'] = nn.Parameter(colors)
 
     return splats
 
@@ -123,6 +126,7 @@ def point_cloud_initialization(
     means = nn.Parameter(means)
     quats = nn.Parameter(torch.rand((num_splats, 4)))
     opacities = nn.Parameter(torch.logit(torch.full((num_splats,), initial_opacity)))
+    static_offsets = nn.Parameter(torch.zeros((num_splats, 3)))
 
     # Compute scales based on the average distance to the 3-nearest neighbors
     sender, receiver = knn(means, means, k=4)
@@ -137,6 +141,7 @@ def point_cloud_initialization(
         scales=scales,
         quats=quats,
         opacities=opacities,
+        static_offsets=static_offsets,
     )
 
     if feature_dim is not None:
@@ -148,7 +153,8 @@ def point_cloud_initialization(
         splats["sh0"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, :1, :]))
         splats["shN"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, 1:, :]))
     else:
-        splats['colors'] = nn.functional.sigmoid(nn.Parameter(colors[random_indices]))
+        colors = torch.logit(colors[random_indices])
+        splats['colors'] = nn.Parameter(colors)
 
     return splats
 
@@ -189,6 +195,7 @@ def flame_initialization(
     means = nn.Parameter(means)
     quats = nn.Parameter(torch.rand((num_splats, 4)))
     opacities = nn.Parameter(torch.logit(torch.full((num_splats,), initial_opacity)))
+    static_offsets = nn.Parameter(torch.zeros((num_splats, 3)))
 
     # Compute scales based on the average distance to the 3-nearest neighbors
     sender, receiver = knn(means, means, k=4)
@@ -203,6 +210,7 @@ def flame_initialization(
         scales=scales,
         quats=quats,
         opacities=opacities,
+        static_offsets=static_offsets,
     )
 
     if feature_dim is not None:
@@ -215,7 +223,9 @@ def flame_initialization(
         splats["sh0"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, :1, :]))
         splats["shN"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, 1:, :]))
     else:
-        splats['colors'] = nn.functional.sigmoid(nn.Parameter(torch.randn((num_splats, 3))))
+        colors = torch.randn((num_splats, 3)).clamp(0, 1)
+        colors = torch.logit(colors)
+        splats['colors'] = nn.Parameter(colors)
 
     return splats
 
@@ -261,6 +271,7 @@ def inside_mouth_flame_initialization(
     means = nn.Parameter(means)
     quats = nn.Parameter(torch.rand((num_splats, 4)))
     opacities = nn.Parameter(torch.logit(torch.full((num_splats,), initial_opacity)))
+    static_offsets = nn.Parameter(torch.zeros((num_splats, 3)))
 
     # Compute scales based on the average distance to the 3-nearest neighbors
     sender, receiver = knn(means, means, k=4)
@@ -275,6 +286,7 @@ def inside_mouth_flame_initialization(
         scales=scales,
         quats=quats,
         opacities=opacities,
+        static_offsets=static_offsets,
     )
 
     if feature_dim is not None:
@@ -287,7 +299,9 @@ def inside_mouth_flame_initialization(
         splats["sh0"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, :1, :]))
         splats["shN"] = nn.Parameter(rgb_to_sh(spherical_harmonics[:, 1:, :]))
     else:
-        splats['colors'] = nn.functional.sigmoid(nn.Parameter(torch.randn((num_splats, 3))))
+        colors = torch.randn((num_splats, 3)).clamp(0, 1)
+        colors = torch.logit(colors)
+        splats['colors'] = nn.Parameter(colors)
 
     return splats
 

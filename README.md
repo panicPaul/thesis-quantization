@@ -1,6 +1,13 @@
 # Speech-driven Face Synthesis with 3D Gaussian Splatting
 Repo for my master thesis.
 
+
+problem is the inter sequence differences, solution:
+-  use a single sequence
+-  use learnable embeddings
+-  reintroduce the opacity loss for mcmc
+
+
 # TODO:
 - try to overfit on open mouth images somehow
 

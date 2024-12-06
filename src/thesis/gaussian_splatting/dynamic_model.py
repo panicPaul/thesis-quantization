@@ -42,6 +42,9 @@ from thesis.data_management.data_classes import (
     UnbatchedSE3Transform,
 )
 from thesis.flame import FlameHeadVanilla, FlameHeadWithInnerMouth
+from thesis.gaussian_splatting.implicit_sequence_adjustment import (
+    ImplicitSequenceAdjustment,
+)
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
     point_cloud_initialization,
@@ -297,6 +300,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             "quats": self.learning_rates.quats_lr * batch_scaling,
             "opacities": self.learning_rates.opacities_lr * batch_scaling,
             "features": self.learning_rates.features_lr * batch_scaling,
+            "static_offsets": self.learning_rates.static_offsets_lr * batch_scaling,
         }
         splat_optimizers = {
             name:
@@ -375,6 +379,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
         windowed_rigging_params: Float[torch.Tensor, "window n_vertices 3"] | None = None,
         background: Float[torch.Tensor, "3"] | None = None,
         _means_override: Float[torch.Tensor, "n_splats 3"] | None = None,
+        sequence: Int[torch.Tensor, ""] | None = None,
+        frame: Int[torch.Tensor, ""] | None = None,
     ) -> tuple[
             Float[torch.Tensor, "cam H W 3"],
             Float[torch.Tensor, "cam H W 1"],
@@ -448,6 +454,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
             audio_features=audio_features,
             windowed_rigging_params=windowed_rigging_params,
             infos=infos,
+            sequence=sequence,
+            frame=frame,
         )
 
         if _means_override is not None:  # used for trajectory smoothing
@@ -638,6 +646,12 @@ class DynamicGaussianSplatting(pl.LightningModule):
                                                  // 2]  # (n_vertices, 3)
 
         # Forward pass
+        if self.gaussian_splatting_settings.implicit_sequence_adjustment_start_iteration >= self.step:
+            sequence = None
+            time_step = None
+        else:
+            sequence = frame.sequence_id
+            time_step = frame.time_step
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             se3_transform=frame.se3_transform,
             rigging_params=rigging_params,
@@ -651,6 +665,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
             audio_features=audio_features,
             windowed_rigging_params=windowed_rigging_params,
             background=self.default_background,
+            sequence=sequence,
+            frame=time_step,
         )
 
         # Pre-backward densification
@@ -689,7 +705,24 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 infos['per_gaussian_color_adjustment'],
                 on_step=True,
                 on_epoch=False)
-        self.log('num_gaussians', self.splats['means'].shape[0], on_step=True, on_epoch=False)
+        if 'implicit_sequence_adjustment' in infos:
+            self.log(
+                'implicit_sequence_adjustment',
+                infos['implicit_sequence_adjustment'],
+                on_step=True,
+                on_epoch=False)
+        self.log(
+            'train/num_gaussians', self.splats['means'].shape[0], on_step=True, on_epoch=False)
+        self.log(
+            'train/static_offset',
+            torch.norm(self.splats['static_offsets'], dim=-1).mean(),
+            on_step=True,
+            on_epoch=False)
+        self.log(
+            'train/opacity',
+            nn.functional.sigmoid(self.splats['opacities']).mean(),
+            on_step=True,
+            on_epoch=False)
 
         # Backward pass and optimization
         self.manual_backward(loss)
@@ -878,6 +911,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
         audio_features: Float[torch.Tensor, 'time 1024'] | None = None,
         windowed_rigging_params: Float[torch.Tensor, 'time n_vertices 3'] | None = None,
         background: Float[torch.Tensor, '3'] | None = None,
+        sequence: int | None = None,
+        frame: int | None = None,
     ) -> Float[torch.Tensor, 'time n_splats 3']:
         """
         Computes the 3D trajectories for each splat.
@@ -979,6 +1014,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 audio_features=audio_features_t,
                 windowed_rigging_params=windowed_rigging_params_t,
                 infos=infos,
+                sequence=sequence,
+                frame=frame,
             )
             trajectories[t - window_size//2] = means
 

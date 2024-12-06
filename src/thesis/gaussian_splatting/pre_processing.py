@@ -24,7 +24,13 @@ from thesis.deformation_field.barycentric_weighting import (
 )
 from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
+from thesis.deformation_field.spherical_interpolation_mlp import (
+    SphericalInterpolationMLP,
+)
 from thesis.flame import FlameHead, FlameHeadVanilla, FlameHeadWithInnerMouth
+from thesis.gaussian_splatting.implicit_sequence_adjustment import (
+    ImplicitSequenceAdjustment,
+)
 from thesis.gaussian_splatting.per_gaussian_coloring import PerGaussianColoring
 from thesis.gaussian_splatting.per_gaussian_deformation import PerGaussianDeformations
 from thesis.gaussian_splatting.view_dependent_coloring import (
@@ -128,6 +134,13 @@ class RiggedPreProcessor(nn.Module):
             self.learnable_shader = LearnableShader(
                 feature_dim=gaussian_splatting_settings.feature_dim)
 
+        if self.gaussian_splatting_settings.spherical_interpolation_mlp:
+            self.spherical_interpolation_mlp = SphericalInterpolationMLP()
+
+        # ---> implicit sequence adjustment
+        if self.gaussian_splatting_settings.use_implicit_sequence_adjustment:
+            self.implicit_sequence_adjustment = ImplicitSequenceAdjustment()
+
     @property
     def canonical_flame_params(self) -> UnbatchedFlameParams:
         """ Returns the canonical flame parameters. """
@@ -174,6 +187,18 @@ class RiggedPreProcessor(nn.Module):
                 'lr': self.learning_rates.learnable_shader_lr * batch_scaling,
                 'weight_decay': 1e-2,  # standard weight decay
             })
+        if hasattr(self, "spherical_interpolation_mlp"):
+            params.append({
+                "params": self.spherical_interpolation_mlp.parameters(),
+                'lr': self.learning_rates.spherical_interpolation_mlp_lr * batch_scaling,
+                'weight_decay': 1e-2,  # standard weight decay
+            })
+        if hasattr(self, "implicit_sequence_adjustment"):
+            params.append({
+                "params": self.implicit_sequence_adjustment.parameters(),
+                'lr': self.learning_rates.implicit_sequence_adjustment_lr * batch_scaling,
+                'weight_decay': 1e-5,  # smaller weight decay
+            })
         if len(params) == 0:
             return None
         else:
@@ -192,6 +217,8 @@ class RiggedPreProcessor(nn.Module):
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
         windowed_rigging_params: Float[torch.Tensor, "window n_vertices 3"] | None = None,
         infos: dict | None = None,
+        sequence: Int[torch.Tensor, ""] | None = None,
+        frame: Int[torch.Tensor, ""] | None = None,
     ) -> tuple[
             Float[torch.Tensor, "n_gaussians 3"],
             Float[torch.Tensor, "n_gaussians 4"],
@@ -232,6 +259,7 @@ class RiggedPreProcessor(nn.Module):
         means = splats["means"]
         quats = splats["quats"]
         features = splats["features"]
+        static_offsets = splats["static_offsets"]
         if 'colors' in splats:
             colors = splats['colors']
         if infos is None:
@@ -239,9 +267,20 @@ class RiggedPreProcessor(nn.Module):
         if camera_indices is None:
             camera_indices = torch.zeros(1, dtype=torch.int64, device=means.device)
 
+        # ---> implicit sequence adjustment
+        if self.gaussian_splatting_settings.use_implicit_sequence_adjustment and sequence is not None and frame is not None:
+            # if sequence is None:
+            #     sequence = torch.tensor(0, dtype=torch.int64, device=means.device)
+            # if frame is None:
+            #     frame = torch.tensor(0, dtype=torch.int64, device=means.device)
+            rigging_params_adjustments = self.implicit_sequence_adjustment.forward(
+                sequence=sequence, time_step=frame)
+            rigging_params = rigging_params + rigging_params_adjustments
+            infos['implicit_sequence_adjustment'] = rigging_params_adjustments.norm(dim=-1).mean()
+
         # ---> rigged deformation field
         if self.gaussian_splatting_settings.flame_deformation_field:
-            indices, _ = self.flame_knn.forward(means)
+            indices, _ = self.flame_knn.forward(means + static_offsets)
             canonical_vertices = self.flame_head.forward(self.canonical_flame_params)
             deformed_vertices = rigging_params.unsqueeze(0)
             vertex_rotations, vertex_translations = self.flame_mesh_extractor.forward(
@@ -249,14 +288,6 @@ class RiggedPreProcessor(nn.Module):
             vertex_rotations = vertex_rotations.permute(1, 0, 2)  # (n_vertices, window_size, 4)
             gaussian_rotations = self.flame_knn.gather(
                 indices, vertex_rotations)  # (n_gaussians, k, window_size, 4)
-            # NOTE: I do not want to have to deal with spherical interpolation and this should be
-            #       close enough
-            # gaussian_rotations = gaussian_rotations[:, 0]  # (n_gaussians, window_size, 4)
-            # gaussian_rotations = gaussian_rotations.permute(1, 0,
-            #                                                 2)  # (window_size, n_gaussians, 4)
-
-            # (n_gaussians, k, window_size, 4) -> (window_size, n_gaussians, k, 4)
-            gaussian_rotations = gaussian_rotations.permute(2, 0, 1, 3)
 
             vertex_translations = vertex_translations.permute(1, 0,
                                                               2)  # (n_vertices, window_size, 3)
@@ -264,7 +295,7 @@ class RiggedPreProcessor(nn.Module):
                 indices, vertex_translations)  # (n_gaussians, k, window_size, 3)
             nn_positions = self.flame_knn.gather(indices,
                                                  canonical_vertices[0])  # (n_gaussians, 3)
-            barycentric_weights = compute_barycentric_weights(means,
+            barycentric_weights = compute_barycentric_weights(means + static_offsets,
                                                               nn_positions)  # (n_gaussians, 3)
             gaussian_translations = apply_barycentric_weights(
                 barycentric_weights, gaussian_translations)  # (n_gaussians, window_size, 3)
@@ -272,9 +303,18 @@ class RiggedPreProcessor(nn.Module):
                 1, 0, 2)  # (window_size, n_gaussians, 3)
 
             # remove window size
-            gaussian_rotations = gaussian_rotations.squeeze(0)
             gaussian_translations = gaussian_translations.squeeze(0)
+            gaussian_rotations = gaussian_rotations.squeeze(2)  # (n_gaussians, k , 4)
             barycentric_weights = barycentric_weights.squeeze(0)
+
+            # spherical interpolation
+            if self.gaussian_splatting_settings.spherical_interpolation_mlp:
+                gaussian_rotations = self.spherical_interpolation_mlp.forward(
+                    rotations=gaussian_rotations,
+                    barycentric_weights=barycentric_weights,
+                )
+            else:
+                gaussian_rotations = gaussian_rotations[:, 0]
 
         else:
             gaussian_rotations = torch.zeros_like(quats)
@@ -285,13 +325,13 @@ class RiggedPreProcessor(nn.Module):
         # apply the deformation field
         means = means + gaussian_translations
         quats = nn.functional.normalize(quats, p=2, dim=-1)
-        quats = quaternion_multiplication(gaussian_rotations[:, 0], quats)
+        quats = quaternion_multiplication(gaussian_rotations, quats)
 
         # ---> Per Gaussian fine tuning
         if hasattr(self, "per_gaussian_deformations"):
             rotation_adjustments, translation_adjustments = self.per_gaussian_deformations.forward(
                 splats=splats,
-                rigged_rotation=gaussian_rotations[:, 0],
+                rigged_rotation=gaussian_rotations,
                 rigged_translation=gaussian_translations,
                 audio_features=audio_features,
                 flame_params=flame_params,
@@ -304,7 +344,7 @@ class RiggedPreProcessor(nn.Module):
         if hasattr(self, "per_gaussian_color_adjustment"):
             color_adjustments = self.per_gaussian_color_adjustment.forward(
                 splats=splats,
-                rigged_rotation=gaussian_rotations[:, 0],
+                rigged_rotation=gaussian_rotations,
                 rigged_translation=gaussian_translations,
                 audio_features=audio_features,
                 flame_params=flame_params,
@@ -323,6 +363,8 @@ class RiggedPreProcessor(nn.Module):
 
         # ---> Coloring
         if hasattr(self, "view_dependent_color_mlp"):
+            if not hasattr(self, "per_gaussian_color_adjustment"):
+                colors = nn.functional.sigmoid(colors)
             colors = self.view_dependent_color_mlp.forward(
                 features=features,
                 camera_ids=camera_indices,

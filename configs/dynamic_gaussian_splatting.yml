@@ -1,21 +1,30 @@
 
-name: 2dgs_full_res_limited_data_3-13
-# port 53823
+name: testing
+# port 51881
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
 
   # pre-processing settings
-  flame_head_type: vanilla
+  flame_head_type: with_inner_mouth
   use_view_dependent_color_mlp: true
-  rasterization_mode: 2dgs
+  rasterization_mode: 3dgs
   prior_window_size: 21 # two thirds of a second
-  per_gaussian_motion_adjustment: true
-  per_gaussian_motion_adjustment_use_audio: true
-  per_gaussian_motion_adjustment_use_flame: false
+  per_gaussian_motion_adjustment: false
+  per_gaussian_motion_adjustment_use_audio: false
+  per_gaussian_motion_adjustment_use_flame: true
   per_gaussian_motion_adjustment_use_rigging: true
 
-  learnable_shader: true
+  per_gaussian_coloring_adjustment: true
+  per_gaussian_coloring_adjustment_use_audio: false
+  per_gaussian_coloring_adjustment_use_flame: true
+  per_gaussian_coloring_adjustment_use_rigging: true
+
+  learnable_shader: false
+
+  spherical_interpolation_mlp: true
+  use_implicit_sequence_adjustment: true
+  implicit_sequence_adjustment_start_iteration: 3_000
 
   # rasterization_settings
   sh_degree: 3
@@ -23,11 +32,11 @@ gaussian_splatting_settings:
 
 
   # post-processing settings
-  background_r: 0.66
-  background_g: 0.66
-  background_b: 0.66
+  background_r: 1.0
+  background_g: 1.0
+  background_b: 1.0
   screen_space_denoising_mode: none
-  learnable_color_correction: true
+  learnable_color_correction: false
 
 
   # densification_settings
@@ -35,15 +44,11 @@ gaussian_splatting_settings:
   # densification_mode: default
   refine_start_iteration: 250
 
-  # refine_stop_iteration: 90_000
-  # train_iterations: 100_000
-  # lpips_start_iteration: 35_000
-
   refine_stop_iteration: 25_000
-  train_iterations: 30_000
+  train_iterations: 50_000
   lpips_start_iteration: 10_000
 
-  cap_max: 100_000
+  cap_max: 250_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
   image_downsampling_factor: 1.0
 
@@ -60,24 +65,24 @@ gaussian_splatting_settings:
   # ssim_image_loss: 0.1
   ssim_image_loss: 0.2
   ssim_denoised_image_loss: null
-  lpips_image_loss: 0.01 #0.003 #0.001 #0.05 is causing significant artifacts # 1e-3 seems too small tho
+  lpips_image_loss: 0.003 #0.01 #0.003 #0.001 #0.05 is causing significant artifacts # 1e-3 seems too small tho
   # lpips_image_loss: null
-  anisotropy_loss: 0.1
+  anisotropy_loss: null
   max_scale_loss: null
   local_rigidity_loss: null
-  background_loss: 0.1
+  background_loss: null
   dist_loss: null
   # dist_loss: null
   # region specific losses
   hair_l1_loss: null
   hair_ssim_loss: null
-  eyebrows_l1_loss: 0.0
-  eyebrows_ssim_loss: 0.1
+  eyebrows_l1_loss: null
+  eyebrows_ssim_loss: null
   lips_l1_loss: null
   lips_ssim_loss: null
   neck_l1_loss: null
-  inner_mouth_l1_loss: 0.0
-  inner_mouth_ssim_loss: 0.1
+  inner_mouth_l1_loss: 0.5
+  inner_mouth_ssim_loss: 0.0
   eyes_l1_loss: null
   eyes_ssim_loss: null
 
@@ -89,6 +94,8 @@ gaussian_splatting_settings:
   camera_batch_size: 1 # anything more than 2 is going to be out of memory
   log_images_interval: 250
   shuffle_train_data: true # keep at true, trade-off not worth it
+  over_sample_open_jaw: true
+  over_sample_probability: 0.5
 #   image_downsampling_factor: 2.0
 
 # ---> Learning Rates
@@ -99,6 +106,7 @@ learning_rates:
   quats_lr: 1e-3
   opacities_lr: 5e-2
   features_lr: 2.5e-3
+  static_offsets_lr: 1e-5
   # colors
   sh0_lr: 2.5e-3 # shN is 1/20 of sh0
   color_lr: 2.5e-3
@@ -109,9 +117,11 @@ learning_rates:
   learnable_shader_lr: 1e-3
   # deformation
   per_gaussian_deformations_lr: 1e-3
+  per_gaussian_color_adjustment_lr: 1e-3
 
   # color correction
   color_correction_lr: 1e-5
+
 
 
   # --> pre_processing
@@ -119,6 +129,8 @@ learning_rates:
   rigging_params_inner_mouth_vertices_lr: 1e-3
   motion_adjustment_lr: 3e-4
   rotation_and_scale_adjustment_lr: 3e-4
+  spherical_interpolation_mlp_lr: 1e-3
+  implicit_sequence_adjustment_lr: 1e-3
 
   # --> post_processing
   learnable_color_correction_lr: 1e-5
@@ -127,7 +139,7 @@ learning_rates:
 # ---> Random other stuff
 compile: true
 viewer_port: 8080
-train_sequences: null
+train_sequences: [10]
 val_sequences: null
 frame: 42
 num_train_workers: 12
