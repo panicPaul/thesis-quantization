@@ -183,6 +183,9 @@ class DynamicGaussianSplattingSettings:
     eyes_ssim_loss: float | None = None
     inner_mouth_ssim_loss: float | None = None
     eyebrows_ssim_loss: float | None = None
+    # mcmc
+    mcmc_opacity_regularization: float | None = None
+    mcmc_scale_regularization: float | None = None
 
     # loss kwargs
     lpips_network: str = 'vgg'
@@ -204,6 +207,7 @@ class DynamicGaussianSplattingSettings:
     monocular_view: bool = False
     over_sample_open_jaw: bool = False
     over_sample_probability: float = 0.5
+    random_background: bool = False
 
 
 def load_config(path: str, mode: Literal['default', 'dynamic']) -> DictConfig:

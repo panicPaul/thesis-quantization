@@ -48,7 +48,10 @@ class ImplicitSequenceAdjustment(nn.Module):
         time_step_sin = torch.sin(time_step)
         time_step_cos = torch.cos(time_step)
         x = torch.cat([self.sequence_codebook(sequence), time_step_sin, time_step_cos], dim=-1)
-        x = self.mlp(x).squeeze(0) * 1e-5
+        # x = self.mlp(x).squeeze(0) * 1e-4
+        # x = x.clamp(-3e-2, 3e-2)  # hard clamp to avoid total collapse
+        x = self.mlp(x).squeeze(0) * 1e-2  # encourages small adjustments
+        x = nn.functional.tanh(x) * 5e-2  # hard clamp to avoid total collapse
         x = x.view(-1, 3)
         # replace NaNs with zeros
         # x[torch.isnan(x)] = 0.0

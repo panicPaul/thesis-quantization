@@ -42,9 +42,6 @@ from thesis.data_management.data_classes import (
     UnbatchedSE3Transform,
 )
 from thesis.flame import FlameHeadVanilla, FlameHeadWithInnerMouth
-from thesis.gaussian_splatting.implicit_sequence_adjustment import (
-    ImplicitSequenceAdjustment,
-)
 from thesis.gaussian_splatting.initialize_splats import (
     flame_initialization,
     point_cloud_initialization,
@@ -645,6 +642,12 @@ class DynamicGaussianSplatting(pl.LightningModule):
         rigging_params = windowed_rigging_params[windowed_rigging_params.shape[0]
                                                  // 2]  # (n_vertices, 3)
 
+        # Get background
+        if self.gaussian_splatting_settings.random_background:
+            background = torch.randint(0, 255, (3,), device='cuda').float() / 255
+        else:
+            background = self.default_background
+
         # Forward pass
         if self.gaussian_splatting_settings.implicit_sequence_adjustment_start_iteration >= self.step:
             sequence = None
@@ -664,7 +667,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             flame_params=flame_params,
             audio_features=audio_features,
             windowed_rigging_params=windowed_rigging_params,
-            background=self.default_background,
+            background=background,
             sequence=sequence,
             frame=time_step,
         )
@@ -686,7 +689,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             target_images=frame.image,
             target_alphas=frame.alpha_map,
             target_segmentation_mask=frame.segmentation_mask,
-            background=self.default_background,
+            background=background,
             infos=infos,
             cur_step=self.step,
         )

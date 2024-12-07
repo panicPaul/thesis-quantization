@@ -279,5 +279,17 @@ class LossComputer(nn.Module):
         psnr = self.psnr.forward(raw_rendered_images, target_images)
         loss_dict["psnr"] = psnr
 
+        # Markov Chain Monte Carlos Losses
+        if self.gaussian_splatting_settings.mcmc_opacity_regularization is not None and self.gaussian_splatting_settings.densification_mode == 'monte_carlo_markov_chain':
+            opacity = nn.functional.sigmoid(splats['opacities']).abs()
+            opacity_loss = opacity.mean()
+            loss_dict["opacity_loss"] = opacity_loss
+            loss = loss + opacity_loss * self.gaussian_splatting_settings.mcmc_opacity_regularization
+        if self.gaussian_splatting_settings.mcmc_scale_regularization is not None and self.gaussian_splatting_settings.densification_mode == 'monte_carlo_markov_chain':
+            scales = torch.exp(splats['scales']).abs()
+            scale_loss = scales.mean()
+            loss_dict["scale_loss"] = scale_loss
+            loss = loss + scale_loss * self.gaussian_splatting_settings.mcmc_scale_regularization
+
         loss_dict["loss"] = loss
         return loss_dict

@@ -15,7 +15,7 @@ gaussian_splatting_settings:
   per_gaussian_motion_adjustment_use_flame: true
   per_gaussian_motion_adjustment_use_rigging: true
 
-  per_gaussian_coloring_adjustment: true
+  per_gaussian_coloring_adjustment: false
   per_gaussian_coloring_adjustment_use_audio: false
   per_gaussian_coloring_adjustment_use_flame: true
   per_gaussian_coloring_adjustment_use_rigging: true
@@ -45,7 +45,7 @@ gaussian_splatting_settings:
   refine_start_iteration: 250
 
   refine_stop_iteration: 25_000
-  train_iterations: 50_000
+  train_iterations: 30_000
   lpips_start_iteration: 10_000
 
   cap_max: 250_000
@@ -85,6 +85,10 @@ gaussian_splatting_settings:
   inner_mouth_ssim_loss: 0.0
   eyes_l1_loss: null
   eyes_ssim_loss: null
+  # mcmc
+  mcmc_opacity_regularization: 0.01 # 0.01 causes the optimization to only focus on luminance
+  mcmc_scale_regularization: 0.01
+
 
   # kwargs
   lpips_network: 'alex'
@@ -97,6 +101,7 @@ gaussian_splatting_settings:
   over_sample_open_jaw: true
   over_sample_probability: 0.5
 #   image_downsampling_factor: 2.0
+  random_background: true
 
 # ---> Learning Rates
 learning_rates:
@@ -139,7 +144,7 @@ learning_rates:
 # ---> Random other stuff
 compile: true
 viewer_port: 8080
-train_sequences: [10]
+train_sequences: [3] # [10]
 val_sequences: null
 frame: 42
 num_train_workers: 12
