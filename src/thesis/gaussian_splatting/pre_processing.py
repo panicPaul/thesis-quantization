@@ -25,12 +25,10 @@ from thesis.deformation_field.barycentric_weighting import (
 from thesis.deformation_field.flame_knn import FlameKNN
 from thesis.deformation_field.mesh_se3_extraction import FlameMeshSE3Extraction
 from thesis.deformation_field.spherical_interpolation_mlp import (
-    SphericalInterpolationMLP,
-)
+    SphericalInterpolationMLP,)
 from thesis.flame import FlameHead, FlameHeadVanilla, FlameHeadWithInnerMouth
 from thesis.gaussian_splatting.implicit_sequence_adjustment import (
-    ImplicitSequenceAdjustment,
-)
+    ImplicitSequenceAdjustment,)
 from thesis.gaussian_splatting.per_gaussian_coloring import PerGaussianColoring
 from thesis.gaussian_splatting.per_gaussian_deformation import PerGaussianDeformations
 from thesis.gaussian_splatting.view_dependent_coloring import (
@@ -113,6 +111,10 @@ class RiggedPreProcessor(nn.Module):
                 mlp_hidden_size=128,
                 per_gaussian_latent_dim=gaussian_splatting_settings.feature_dim,
                 n_vertices=n_vertices,
+                per_gaussian_deformation_scale=gaussian_splatting_settings
+                .per_gaussian_motion_adjustment_scale,
+                use_sequence=gaussian_splatting_settings
+                .per_gaussian_motion_adjustment_use_sequence,
             )
 
         if gaussian_splatting_settings.per_gaussian_coloring_adjustment:
@@ -219,6 +221,7 @@ class RiggedPreProcessor(nn.Module):
         infos: dict | None = None,
         sequence: Int[torch.Tensor, ""] | None = None,
         frame: Int[torch.Tensor, ""] | None = None,
+        cur_step: int | None = None,
     ) -> tuple[
             Float[torch.Tensor, "n_gaussians 3"],
             Float[torch.Tensor, "n_gaussians 4"],
@@ -278,6 +281,17 @@ class RiggedPreProcessor(nn.Module):
             rigging_params = rigging_params + rigging_params_adjustments
             infos['implicit_sequence_adjustment'] = rigging_params_adjustments.norm(dim=-1).mean()
 
+            # # TODO: it should also effect the other ones obviously
+            # window_size = self.gaussian_splatting_settings.prior_window_size
+            # sequence = sequence.repeat(window_size)  # (window_size)
+            # half_size = window_size // 2
+            # windowed_frame = torch.arange(
+            #     -half_size, half_size + 1, dtype=torch.int64, device=means.device)  # (window_size)
+            # windowed_frame = windowed_frame + frame
+            # windowed_adjustments = self.implicit_sequence_adjustment.forward(
+            #     sequence=sequence, time_step=windowed_frame)
+            # windowed_rigging_params = windowed_rigging_params + windowed_adjustments
+
         # ---> rigged deformation field
         if self.gaussian_splatting_settings.flame_deformation_field:
             indices, _ = self.flame_knn.forward(means + static_offsets)
@@ -328,7 +342,9 @@ class RiggedPreProcessor(nn.Module):
         quats = quaternion_multiplication(gaussian_rotations, quats)
 
         # ---> Per Gaussian fine tuning
-        if hasattr(self, "per_gaussian_deformations"):
+        if hasattr(self, "per_gaussian_deformations") and (
+                cur_step is None or cur_step
+                > self.gaussian_splatting_settings.per_gaussian_motion_adjustment_start_iteration):
             rotation_adjustments, translation_adjustments = self.per_gaussian_deformations.forward(
                 splats=splats,
                 rigged_rotation=gaussian_rotations,
@@ -336,12 +352,15 @@ class RiggedPreProcessor(nn.Module):
                 audio_features=audio_features,
                 flame_params=flame_params,
                 rigging_params=windowed_rigging_params,
+                sequence_id=sequence,
             )
             means = means + translation_adjustments
             quats = quaternion_multiplication(rotation_adjustments, quats)
             infos['per_gaussian_movement'] = translation_adjustments.norm(dim=-1).mean()
 
-        if hasattr(self, "per_gaussian_color_adjustment"):
+        if hasattr(self, "per_gaussian_color_adjustment") and (
+                cur_step is None or cur_step >
+                self.gaussian_splatting_settings.per_gaussian_coloring_adjustment_start_iteration):
             color_adjustments = self.per_gaussian_color_adjustment.forward(
                 splats=splats,
                 rigged_rotation=gaussian_rotations,

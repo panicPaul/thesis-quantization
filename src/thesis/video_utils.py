@@ -12,7 +12,7 @@ import pydub
 import soundfile as sf
 import torch
 from jaxtyping import Float, Int, UInt8
-from moviepy.editor import (
+from moviepy import (
     AudioFileClip,
     VideoFileClip,
     clips_array,
@@ -148,8 +148,10 @@ def side_by_side(
 
     # Resize videos to the same height if needed
     height = min(video_1.h, video_2.h)
-    video_1_resized = video_1.resize(height=height)
-    video_2_resized = video_2.resize(height=height)
+    # video_1_resized = video_1.resize(height=height)
+    # video_2_resized = video_2.resize(height=height)
+    video_1_resized = video_1
+    video_2_resized = video_2
 
     # Make sure both videos have the same duration
     assert video_1.duration == video_2.duration, \

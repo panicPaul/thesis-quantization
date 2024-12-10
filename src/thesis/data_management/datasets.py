@@ -127,6 +127,8 @@ class MultiSequenceDataset(Dataset):
         window_size: int = 1,
         over_sample_open_jaw: bool = False,
         over_sample_probability: float = 0.5,
+        over_sample_sequence: int | None = None,
+        over_sample_sequence_probability: float = 0.5,
     ) -> None:
         """
         Args:
@@ -152,11 +154,16 @@ class MultiSequenceDataset(Dataset):
         self.window_size = window_size
         self.over_sample_open_jaw = over_sample_open_jaw
         self.over_sample_probability = over_sample_probability
+        if over_sample_sequence is not None:
+            self.over_sample_sequence = self.msm.sequences.index(over_sample_sequence)
+        else:
+            self.over_sample_sequence = None
+        self.over_sample_sequence_probability = over_sample_sequence_probability
 
     def __len__(self) -> int:
         return len(self.msm)
 
-    def _over_sample(self, sequence_idx: int, frame_idx: int) -> int:
+    def _over_sample_jaw(self, sequence_idx: int, frame_idx: int) -> int:
         """
         Over-sample frames with open jaw.
 
@@ -171,13 +178,28 @@ class MultiSequenceDataset(Dataset):
         sample = np.random.choice(np.arange(len(probs)), p=probs)
         return int(sample)
 
+    def _over_sample_sequence(self) -> tuple[int, int]:
+        """ Over-sample a sequence. """
+        assert self.over_sample_sequence is not None, "Sequence to over-sample must be set."
+        # return index of self.msm.sequences
+        #return int(self.msm.sequences.index(self.over_sample_sequence))
+        sequence_length = len(self.msm[self.over_sample_sequence])
+        frame_idx = np.random.randint(sequence_length)
+        return self.over_sample_sequence, frame_idx
+
     def __getitem__(
         self, idx: int
     ) -> tuple[dc.SingleFrameData, dc.UnbatchedFlameParams, Float[torch.Tensor, "time 1024"]]:
         """ Get a single frame and flame and audio prior information. """
         sequence_idx, frame_idx = self.msm.global_index_to_sequence_idx(idx)
+
+        if self.over_sample_sequence is not None and torch.rand(
+                1).item() < self.over_sample_sequence_probability:
+            sequence_idx, frame_idx = self._over_sample_sequence()
+
         if self.over_sample_open_jaw and torch.rand(1).item() < self.over_sample_probability:
-            frame_idx = self._over_sample(sequence_idx, frame_idx)
+            frame_idx = self._over_sample_jaw(sequence_idx, frame_idx)
+
         single_frame = self.msm[sequence_idx].get_single_frame(frame_idx, self.n_cameras_per_frame)
         window_indices = slice(
             max(frame_idx - self.window_size // 2, 0),

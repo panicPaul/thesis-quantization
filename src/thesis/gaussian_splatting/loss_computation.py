@@ -110,8 +110,7 @@ class LossComputer(nn.Module):
             loss_dict["background_loss"] = background_loss
             loss = loss + background_loss * self.gaussian_splatting_settings.background_loss
         # aniostropy loss
-        if self.gaussian_splatting_settings.anisotropy_loss is not None and \
-           self.gaussian_splatting_settings.rasterization_mode == '3dgs':  # disable for 2dgs
+        if self.gaussian_splatting_settings.anisotropy_loss is not None:
 
             @torch.compiler.disable
             def f():
@@ -280,16 +279,31 @@ class LossComputer(nn.Module):
         loss_dict["psnr"] = psnr
 
         # Markov Chain Monte Carlos Losses
-        if self.gaussian_splatting_settings.mcmc_opacity_regularization is not None and self.gaussian_splatting_settings.densification_mode == 'monte_carlo_markov_chain':
+        if self.gaussian_splatting_settings.mcmc_opacity_regularization is not None and self.gaussian_splatting_settings.densification_mode == 'monte_carlo_markov_chain' and cur_step > self.gaussian_splatting_settings.refine_start_iteration and cur_step < self.gaussian_splatting_settings.refine_stop_iteration:
             opacity = nn.functional.sigmoid(splats['opacities']).abs()
             opacity_loss = opacity.mean()
             loss_dict["opacity_loss"] = opacity_loss
             loss = loss + opacity_loss * self.gaussian_splatting_settings.mcmc_opacity_regularization
-        if self.gaussian_splatting_settings.mcmc_scale_regularization is not None and self.gaussian_splatting_settings.densification_mode == 'monte_carlo_markov_chain':
+        if self.gaussian_splatting_settings.mcmc_scale_regularization is not None and self.gaussian_splatting_settings.densification_mode == 'monte_carlo_markov_chain' and cur_step > self.gaussian_splatting_settings.refine_start_iteration and cur_step < self.gaussian_splatting_settings.refine_stop_iteration:
             scales = torch.exp(splats['scales']).abs()
             scale_loss = scales.mean()
             loss_dict["scale_loss"] = scale_loss
             loss = loss + scale_loss * self.gaussian_splatting_settings.mcmc_scale_regularization
+
+        # 2DGS Losses
+        if self.gaussian_splatting_settings.normal_loss_2dgs is not None and self.gaussian_splatting_settings.rasterization_mode == '2dgs' and cur_step > self.gaussian_splatting_settings.normal_loss_2dgs_start_iteration:
+            render_normals = infos['render_normals']
+            surface_normals = infos['surface_normals']
+            normal_loss = (1 - (render_normals * surface_normals).sum(dim=0))[None]
+            normal_loss = normal_loss.mean()
+            loss_dict["normal_loss"] = normal_loss
+            if cur_step > self.gaussian_splatting_settings.normal_loss_2dgs_start_iteration:
+                loss = loss + normal_loss * self.gaussian_splatting_settings.normal_loss_2dgs
+        if self.gaussian_splatting_settings.render_distortion_loss_2dgs and self.gaussian_splatting_settings.rasterization_mode == '2dgs' and cur_step > self.gaussian_splatting_settings.render_distortion_loss_2dgs_start_iteration:
+            render_distortion_loss = infos['render_distortion_loss'].mean()
+            loss_dict["render_distortion_loss"] = render_distortion_loss
+            if cur_step > self.gaussian_splatting_settings.render_distortion_loss_2dgs_start_iteration:
+                loss = loss + render_distortion_loss * self.gaussian_splatting_settings.render_distortion_loss_2dgs
 
         loss_dict["loss"] = loss
         return loss_dict

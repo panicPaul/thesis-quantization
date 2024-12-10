@@ -1,0 +1,131 @@
+name: ablations_final/2dgs_with_anisotropy_reg_overnight
+gaussian_splatting_settings:
+  use_implicit_sequence_adjustment: false
+  implicit_sequence_adjustment_start_iteration: 3000
+  flame_deformation_field: true
+  flame_head_type: with_inner_mouth
+  use_view_dependent_color_mlp: true
+  prior_window_size: 21
+  per_gaussian_motion_adjustment: true
+  per_gaussian_motion_adjustment_use_audio: true
+  per_gaussian_motion_adjustment_use_flame: false
+  per_gaussian_motion_adjustment_use_rigging: true
+  per_gaussian_motion_adjustment_use_sequence: false
+  per_gaussian_motion_adjustment_start_iteration: 0
+  per_gaussian_motion_adjustment_scale: 0.0001
+  per_gaussian_coloring_adjustment: true
+  per_gaussian_coloring_adjustment_use_audio: true
+  per_gaussian_coloring_adjustment_use_flame: false
+  per_gaussian_coloring_adjustment_use_rigging: true
+  per_gaussian_coloring_adjustment_use_sequence: false
+  per_gaussian_coloring_adjustment_start_iteration: 0
+  spherical_interpolation_mlp: true
+  learnable_shader: false
+  sh_degree: 3
+  rasterization_mode: 2dgs
+  antialiased: true
+  radius_clip: 0.3
+  background_r: 1.0
+  background_g: 1.0
+  background_b: 1.0
+  screen_space_denoising_mode: none
+  screen_space_denoising_start_iteration: 0
+  camera_color_correction: false
+  learnable_color_correction: false
+  densification_mode: monte_carlo_markov_chain
+  refine_start_iteration: 500
+  refine_stop_iteration: 249_000
+  cap_max: 200_000
+  refine_every_n_iterations: 100
+  initialization_mode: flame
+  initialization_points: 30000
+  initialization_checkpoint: tb_logs/single_frame/3dgs/version_0/checkpoints/epoch=24-step=100000.ckpt
+  scene_scale: 0.2
+  l1_image_loss: 1.0
+  ssim_image_loss: 0.2
+  ssim_denoised_image_loss: null
+  lpips_image_loss: 0.003
+  anisotropy_loss: 1e3
+  max_scale_loss: null
+  local_rigidity_loss: null
+  background_loss: null
+  dist_loss: null
+  face_nose_l1_loss: null
+  hair_l1_loss: null
+  neck_l1_loss: null
+  ears_l1_loss: null
+  lips_l1_loss: null
+  eyes_l1_loss: null
+  inner_mouth_l1_loss: null
+  eyebrows_l1_loss: null
+  hair_ssim_loss: null
+  lips_ssim_loss: null
+  eyes_ssim_loss: null
+  inner_mouth_ssim_loss: null
+  eyebrows_ssim_loss: null
+  mcmc_opacity_regularization: 0.01
+  mcmc_scale_regularization: 0.01
+  mcmc_noise_lr: 1000.0
+  normal_loss_2dgs: 0.01
+  normal_loss_2dgs_start_iteration: 5000
+  render_distortion_loss_2dgs: 0.01
+  render_distortion_loss_2dgs_start_iteration: 2500
+  lpips_network: alex
+  anisotropy_max_ratio: 5.0
+  max_scale: 0.05
+  jumper_is_background: true
+  feature_dim: 64
+  camera_batch_size: 1
+  sh_increase_interval: 1000
+  train_iterations: 250_000
+  rigid_fine_tune_iterations: 1000
+  log_images_interval: 250
+  shuffle_train_data: true
+  lpips_start_iteration: 10000
+  image_downsampling_factor: 1.0
+  use_other_guy: false
+  monocular_view: false
+  over_sample_open_jaw: false
+  over_sample_probability: 0.5
+  over_sample_sequence: null
+  over_sample_sequence_probability: 0.75
+  random_background: true
+learning_rates:
+  means_lr: 0.00016
+  scales_lr: 0.005
+  quats_lr: 0.001
+  opacities_lr: 0.05
+  features_lr: 0.0025
+  static_offsets_lr: 1.0e-05
+  sh0_lr: 0.0025
+  color_lr: 0.0025
+  color_mlp_lr: 0.001
+  color_mlp_weight_decay: 1.0e-06
+  learnable_shader_lr: 0.001
+  per_gaussian_deformations_lr: 0.001
+  per_gaussian_color_adjustment_lr: 0.001
+  color_correction_lr: 1.0e-05
+  rigging_params_flame_vertices_lr: 0.001
+  rigging_params_inner_mouth_vertices_lr: 0.001
+  motion_adjustment_lr: 0.0003
+  rotation_and_scale_adjustment_lr: 0.0003
+  spherical_interpolation_mlp_lr: 0.001
+  implicit_sequence_adjustment_lr: 1.0e-06
+  learnable_color_correction_lr: 1.0e-05
+  screen_space_denoiser_lr: 0.001
+enable_viewer: true
+viewer_sequences:
+- 3
+- 100
+ckpt_path: null
+
+
+compile: true
+viewer_port: 8080
+train_sequences: null #[3] # [3] # [3,4,5,6,7,8,9,10,11,12,13] # [10] # [10]
+val_sequences: null
+frame: 42
+num_train_workers: 12
+num_val_workers: 4
+tensorboard_dir: logs
+data_dir: null

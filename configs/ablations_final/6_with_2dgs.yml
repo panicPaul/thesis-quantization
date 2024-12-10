@@ -1,14 +1,15 @@
 
-name: without_implicit_sequence_adjustment
-# port 37043
+name: ablations_final/with_2dgs
+# port 36485
 
+# ---> gaussian splatting settings
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
 
   # pre-processing settings
   flame_head_type: with_inner_mouth
   use_view_dependent_color_mlp: true
-  rasterization_mode: 3dgs
+  rasterization_mode: 2dgs
   prior_window_size: 21 # two thirds of a second
   per_gaussian_motion_adjustment: true
   per_gaussian_motion_adjustment_use_audio: true
@@ -51,9 +52,9 @@ gaussian_splatting_settings:
   refine_start_iteration: 500
   refine_every_n_iterations: 500
 
-  refine_stop_iteration: 25_000
-  train_iterations: 30_000
-  lpips_start_iteration: 1_500
+  refine_stop_iteration: 45_000
+  train_iterations: 50_000
+  lpips_start_iteration: 10_000
 
   cap_max: 50_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
@@ -84,12 +85,12 @@ gaussian_splatting_settings:
   hair_l1_loss: null
   hair_ssim_loss: null
   eyebrows_l1_loss: null
-  eyebrows_ssim_loss: null
+  eyebrows_ssim_loss: 0.2
   lips_l1_loss: null
   lips_ssim_loss: null
   neck_l1_loss: null
   inner_mouth_l1_loss: null
-  inner_mouth_ssim_loss: null
+  inner_mouth_ssim_loss: 0.2
   eyes_l1_loss: null
   eyes_ssim_loss: null
   # mcmc
@@ -98,9 +99,9 @@ gaussian_splatting_settings:
   mcmc_noise_lr: 1e5 #1e3 # needs to be max 1e4 for 2dgs, maybe even lower
   
   # 2dgs
-  normal_loss_2dgs: null #5e-2
+  normal_loss_2dgs: 5e-2
   normal_loss_2dgs_start_iteration: 10_000
-  render_distortion_loss_2dgs: null #1e-2 
+  render_distortion_loss_2dgs: 1e-2 
   render_distortion_loss_2dgs_start_iteration: 5_000
 
   # kwargs
@@ -109,14 +110,14 @@ gaussian_splatting_settings:
   # train settings
   # feature_dim: 32
   feature_dim: 64
-  camera_batch_size: 4 # anything more than 2 is going to be out of memory
+  camera_batch_size: 2 # anything more than 2 is going to be out of memory
   log_images_interval: 250
   shuffle_train_data: True # keep at true, trade-off not worth it
   over_sample_open_jaw: true
-  over_sample_probability: 0.25
+  over_sample_probability: 0.5
 
   over_sample_sequence: 3 #8 # maybe 8 is better actually!
-  over_sample_sequence_probability: 0.25 # 0.75
+  over_sample_sequence_probability: 0.5 # 0.75
 #   image_downsampling_factor: 2.0
   random_background: true
 

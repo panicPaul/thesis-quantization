@@ -2,7 +2,7 @@
 
 import torch
 from einops import repeat
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from torch import nn
 
 from thesis.data_management.data_classes import UnbatchedFlameParams
@@ -66,6 +66,8 @@ class PerGaussianDeformations(nn.Module):
         per_gaussian_latent_dim: int = 32,
         use_audio_code_book: bool = False,
         n_vertices: int = 5443,
+        per_gaussian_deformation_scale: float = 1e-4,
+        use_sequence: bool = False,
     ) -> None:
         """
         Args:
@@ -84,6 +86,8 @@ class PerGaussianDeformations(nn.Module):
         self.use_audio_code_book = use_audio_code_book
         self.use_flame_params = use_flame_params
         self.use_rigging_params = use_rigging_params
+        self.per_gaussian_deformation_scale = per_gaussian_deformation_scale
+        self.use_sequence = use_sequence
 
         # input
         input_size = 14 + per_gaussian_latent_dim  # 14 for 6dof position and adjustment
@@ -132,6 +136,10 @@ class PerGaussianDeformations(nn.Module):
                 nn.Linear(128, 32),
             )
 
+        if use_sequence:
+            self.sequence_code_book = nn.Embedding(num_embeddings=80, embedding_dim=256)
+            input_size += 256
+
         # mlp
         mlp_layer_list = []
         mlp_layer_list.append(nn.Linear(input_size, mlp_hidden_size))
@@ -150,6 +158,7 @@ class PerGaussianDeformations(nn.Module):
         audio_features: Float[torch.Tensor, "window_size 1024"] | None = None,
         flame_params: UnbatchedFlameParams | None = None,
         rigging_params: Float[torch.Tensor, "window n_vertices 3"] | None = None,
+        sequence_id: Int[torch.Tensor, ""] | None = None,
     ) -> tuple[Float[torch.Tensor, 'n_gaussians 4'], Float[torch.Tensor, 'n_gaussians 3']]:
         """
         Computes the final adjustments to the per gaussian means and quaternions. Returns the
@@ -208,10 +217,18 @@ class PerGaussianDeformations(nn.Module):
                 rigging_features, "f -> n_gaussians f", n_gaussians=means.shape[0])
             input_list.append(rigging_features)
 
+        if self.use_sequence:
+            if sequence_id is None:
+                sequence_id = torch.tensor(3, device=means.device)
+            sequence_features = self.sequence_code_book.forward(sequence_id)
+            sequence_features = repeat(
+                sequence_features, "f -> n_gaussians f", n_gaussians=means.shape[0])
+            input_list.append(sequence_features)
+
         input_tensor = torch.concatenate(input_list, dim=-1)
         adjustments = self.mlp.forward(input_tensor)
         rotation_adjustments = adjustments[..., :4]
         rotation_adjustments = nn.functional.normalize(rotation_adjustments, p=2, dim=-1)
-        translation_adjustments = adjustments[..., 4:] * 1e-4
+        translation_adjustments = adjustments[..., 4:] * self.per_gaussian_deformation_scale
 
         return rotation_adjustments, translation_adjustments

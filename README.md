@@ -2,6 +2,11 @@
 Repo for my master thesis.
 
 
+images: bowl sequence 97
+silence: any sequence
+penalty: 101
+
+
 problem is the inter sequence differences, solution:
 -  use a single sequence
 -  use learnable embeddings

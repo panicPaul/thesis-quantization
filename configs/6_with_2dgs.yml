@@ -1,6 +1,6 @@
 
-name: without_implicit_sequence_adjustment
-# port 37043
+name: ablations_final/with_2dgs
+# port 36485
 
 # ---> gaussian splatting settings
 gaussian_splatting_settings:
@@ -8,33 +8,30 @@ gaussian_splatting_settings:
   # pre-processing settings
   flame_head_type: with_inner_mouth
   use_view_dependent_color_mlp: true
-  rasterization_mode: 3dgs
+  rasterization_mode: 2dgs
   prior_window_size: 21 # two thirds of a second
   per_gaussian_motion_adjustment: true
   per_gaussian_motion_adjustment_use_audio: true
   per_gaussian_motion_adjustment_use_flame: false
   per_gaussian_motion_adjustment_use_rigging: true
-  per_gaussian_motion_adjustment_use_sequence: true
   per_gaussian_motion_adjustment_start_iteration: 0
-  per_gaussian_motion_adjustment_scale: 1e-2
 
   per_gaussian_coloring_adjustment: true
   per_gaussian_coloring_adjustment_use_audio: true
   per_gaussian_coloring_adjustment_use_flame: false
   per_gaussian_coloring_adjustment_use_rigging: true
-  per_gaussian_coloring_adjustment_use_sequence: true
   per_gaussian_coloring_adjustment_start_iteration: 0
 
 
   learnable_shader: false
 
   spherical_interpolation_mlp: true
-  use_implicit_sequence_adjustment: false
+  use_implicit_sequence_adjustment: true
   implicit_sequence_adjustment_start_iteration: 3_000
 
   # rasterization_settings
   sh_degree: 3
-  radius_clip: 0.0
+  radius_clip: 0.3
 
 
   # post-processing settings
@@ -49,11 +46,10 @@ gaussian_splatting_settings:
   densification_mode: monte_carlo_markov_chain
   # densification_mode: default
   refine_start_iteration: 500
-  refine_every_n_iterations: 500
 
   refine_stop_iteration: 25_000
   train_iterations: 30_000
-  lpips_start_iteration: 1_500
+  lpips_start_iteration: 10_000
 
   cap_max: 50_000
   screen_space_denoising_start_iteration: 0 # not implemented rn, and might not be needed
@@ -93,15 +89,14 @@ gaussian_splatting_settings:
   eyes_l1_loss: null
   eyes_ssim_loss: null
   # mcmc
-  mcmc_opacity_regularization:  0.01 # 0.01 causes the optimization to only focus on luminance sometimes
+  mcmc_opacity_regularization: 0.01 # 0.01 causes the optimization to only focus on luminance sometimes
   mcmc_scale_regularization: 0.01
-  mcmc_noise_lr: 1e5 #1e3 # needs to be max 1e4 for 2dgs, maybe even lower
-  
+  mcmc_noise_lr: 1e3 # needs to be max 1e4 for 2dgs, maybe even lower
   # 2dgs
-  normal_loss_2dgs: null #5e-2
-  normal_loss_2dgs_start_iteration: 10_000
-  render_distortion_loss_2dgs: null #1e-2 
-  render_distortion_loss_2dgs_start_iteration: 5_000
+  normal_loss_2dgs: 5e-2
+  normal_loss_2dgs_start_iteration: 5_000
+  render_distortion_loss_2dgs: 1e-2 
+  render_distortion_loss_2dgs_start_iteration: 2_500
 
   # kwargs
   lpips_network: 'alex'
@@ -109,14 +104,14 @@ gaussian_splatting_settings:
   # train settings
   # feature_dim: 32
   feature_dim: 64
-  camera_batch_size: 4 # anything more than 2 is going to be out of memory
+  camera_batch_size: 1 # anything more than 2 is going to be out of memory
   log_images_interval: 250
-  shuffle_train_data: True # keep at true, trade-off not worth it
+  shuffle_train_data: true # keep at true, trade-off not worth it
   over_sample_open_jaw: true
-  over_sample_probability: 0.25
+  over_sample_probability: 0.5
 
-  over_sample_sequence: 3 #8 # maybe 8 is better actually!
-  over_sample_sequence_probability: 0.25 # 0.75
+  over_sample_sequence: 3
+  over_sample_sequence_probability: 0.75
 #   image_downsampling_factor: 2.0
   random_background: true
 

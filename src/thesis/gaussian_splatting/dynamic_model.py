@@ -210,6 +210,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                     refine_start_iter=gaussian_splatting_settings.refine_start_iteration,
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
+                    refine_every=gaussian_splatting_settings.refine_every_n_iterations,
                 )
             case "absgs":  # https://arxiv.org/abs/2404.10484
                 self.strategy = DefaultStrategy(
@@ -220,6 +221,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                     revised_opacity=True,  # https://arxiv.org/abs/2404.06109
                     grow_grad2d=0.0004,
                     pause_refine_after_reset=16,
+                    refine_every=gaussian_splatting_settings.refine_every_n_iterations,
                 )
             case "monte_carlo_markov_chain":
                 self.strategy = MCMCStrategy(
@@ -227,6 +229,8 @@ class DynamicGaussianSplatting(pl.LightningModule):
                     refine_stop_iter=refine_stop_iteration,
                     verbose=True,
                     cap_max=gaussian_splatting_settings.cap_max,
+                    noise_lr=gaussian_splatting_settings.mcmc_noise_lr,
+                    refine_every=gaussian_splatting_settings.refine_every_n_iterations,
                 )
             case _:
                 raise ValueError("Unknown densification mode: "
@@ -378,6 +382,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         _means_override: Float[torch.Tensor, "n_splats 3"] | None = None,
         sequence: Int[torch.Tensor, ""] | None = None,
         frame: Int[torch.Tensor, ""] | None = None,
+        cur_step: int | None = None,
     ) -> tuple[
             Float[torch.Tensor, "cam H W 3"],
             Float[torch.Tensor, "cam H W 1"],
@@ -453,6 +458,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             infos=infos,
             sequence=sequence,
             frame=frame,
+            cur_step=cur_step,
         )
 
         if _means_override is not None:  # used for trajectory smoothing
@@ -480,7 +486,12 @@ class DynamicGaussianSplatting(pl.LightningModule):
             case "default" | "3dgs":
                 images, alphas, new_infos = ret
             case "2dgs":
-                images, alphas, _, _, _, _, new_infos = ret
+                images, alphas, render_normals, surface_normals, render_distort, render_median, new_infos = ret
+                new_infos['render_normals'] = render_normals
+                new_infos['surface_normals'] = surface_normals
+                new_infos['render_distortion_loss'] = render_distort
+                new_infos['render_median'] = render_median
+
         infos = infos | new_infos
         depth_maps = images[:, :, :, 3:]  # get depth maps
         images = images[:, :, :, :3]  # get RGB channels
@@ -497,7 +508,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
         return images, alphas, depth_maps, infos
 
     # ================================================================================ #
-    #                                 Viewer stuff                                     #
+    # MARK:                           Viewer stuff                                     #
     # ================================================================================ #
 
     def start_viewer(self,
@@ -600,7 +611,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             return depth
 
     # ================================================================================ #
-    #                                 Training step                                    #
+    #                                 MARK: Training step                              #
     # ================================================================================ #
 
     def training_step(
@@ -649,12 +660,15 @@ class DynamicGaussianSplatting(pl.LightningModule):
             background = self.default_background
 
         # Forward pass
-        if self.gaussian_splatting_settings.implicit_sequence_adjustment_start_iteration >= self.step:
-            sequence = None
-            time_step = None
-        else:
-            sequence = frame.sequence_id
-            time_step = frame.time_step
+        # if self.gaussian_splatting_settings.implicit_sequence_adjustment_start_iteration >= self.step:
+        #     sequence = None
+        #     time_step = None
+        # else:
+        #     sequence = frame.sequence_id
+        #     time_step = frame.time_step
+        sequence = frame.sequence_id
+        time_step = frame.time_step
+
         rendered_images, rendered_alphas, rendered_depth, infos = self.forward(
             se3_transform=frame.se3_transform,
             rigging_params=rigging_params,
@@ -670,6 +684,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             background=background,
             sequence=sequence,
             frame=time_step,
+            cur_step=self.step,
         )
 
         # Pre-backward densification
@@ -846,6 +861,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
             windowed_rigging_params=windowed_rigging_params,
             background=self.default_background,
             world_2_cam=frame.world_2_cam,
+            cur_step=self.step,
         )
 
         # Compute loss
@@ -1019,6 +1035,7 @@ class DynamicGaussianSplatting(pl.LightningModule):
                 infos=infos,
                 sequence=sequence,
                 frame=frame,
+                cur_step=self.step,
             )
             trajectories[t - window_size//2] = means
 
@@ -1197,6 +1214,9 @@ def training_loop(config_path: str) -> None:
         image_downsampling_factor=config.gaussian_splatting_settings.image_downsampling_factor,
         over_sample_open_jaw=config.gaussian_splatting_settings.over_sample_open_jaw,
         over_sample_probability=config.gaussian_splatting_settings.over_sample_probability,
+        over_sample_sequence=config.gaussian_splatting_settings.over_sample_sequence,
+        over_sample_sequence_probability=config.gaussian_splatting_settings
+        .over_sample_sequence_probability,
     )
     train_loader = DataLoader(
         train_set,

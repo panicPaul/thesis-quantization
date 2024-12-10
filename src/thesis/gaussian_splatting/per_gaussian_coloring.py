@@ -66,6 +66,7 @@ class PerGaussianColoring(nn.Module):
         per_gaussian_latent_dim: int = 32,
         use_audio_code_book: bool = False,
         n_vertices: int = 5443,
+        use_sequence: bool = False,
     ) -> None:
         """
         Args:
@@ -84,6 +85,7 @@ class PerGaussianColoring(nn.Module):
         self.use_audio_code_book = use_audio_code_book
         self.use_flame_params = use_flame_params
         self.use_rigging_params = use_rigging_params
+        self.use_sequence = use_sequence
 
         # input
         input_size = per_gaussian_latent_dim + 7  # 4 rotation, 3 translation
@@ -131,6 +133,9 @@ class PerGaussianColoring(nn.Module):
                 nn.SiLU(),
                 nn.Linear(128, 32),
             )
+        if use_sequence:
+            self.sequence_code_book = nn.Embedding(num_embeddings=80, embedding_dim=256)
+            input_size += 256
 
         # mlp
         mlp_layer_list = []
@@ -203,6 +208,14 @@ class PerGaussianColoring(nn.Module):
             rigging_features = repeat(
                 rigging_features, "f -> n_gaussians f", n_gaussians=means.shape[0])
             input_list.append(rigging_features)
+
+        if self.use_sequence:
+            if sequence_id is None:
+                sequence_id = torch.tensor(3, device=means.device)
+            sequence_features = self.sequence_code_book.forward(sequence_id)
+            sequence_features = repeat(
+                sequence_features, "f -> n_gaussians f", n_gaussians=means.shape[0])
+            input_list.append(sequence_features)
 
         input_tensor = torch.concatenate(input_list, dim=-1)
         color_adjustments = self.mlp.forward(input_tensor)

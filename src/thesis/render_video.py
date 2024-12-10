@@ -73,6 +73,8 @@ def process_audio(
     else:
         audio, sr = sf.read(audio_path)
     audio = librosa.resample(audio, orig_sr=sr, target_sr=16_000)
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)  # convert to mono
     sr = 16_000
     if n_frames is None:
         audio_length = len(audio) / sr  # in seconds
@@ -583,12 +585,12 @@ def main(
 if __name__ == '__main__':
     # Arguments
     mode: Literal['flame', 'audio'
-                  'gt'] = 'audio'
-    sequence: int | None = 97
+                  'gt'] = 'flame'
+    sequence: int | None = 3
     use_other_guy = False
     quicktime_compatible: bool = False
     audio_path: str | None = None  # 'tmp/german_test.m4a'
-    gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
+    # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_full_res_500k_overnight_rigging_large_lpips/version_0/checkpoints/epoch=7-step=800000.ckpt'  # noqa
     # gaussian_splats_checkpoint: str = 'tb_logs/dynamic_gaussian_splatting/2dgs_monocular_overnight/version_1/checkpoints/epoch=7-step=800000.ckpt'  # noqa
 
     # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/other_guy_overnight/version_0/checkpoints/epoch=119-step=800000.ckpt' # noqa
@@ -598,6 +600,9 @@ if __name__ == '__main__':
     audio_to_flame_checkpoint: str | None = 'tb_logs/audio_prediction/final_final_revert_default/version_0/checkpoints/epoch=99-step=7700.ckpt'  # noqa
     smoothing_mode: Literal['none', 'gaussian', 'moving_average', 'savgol', 'exponential'] = 'none'
     background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 1.0
+
+    # gs checkpoint
+    gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/ablations_final/with_2dgs/version_0/checkpoints/epoch=2-step=240000.ckpt'
 
     # Parse overridable arguments
     parser = argparse.ArgumentParser()

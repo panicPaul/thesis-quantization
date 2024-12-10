@@ -25,6 +25,8 @@ class GaussianSplattingSettings:
     per_gaussian_motion_adjustment_use_audio: bool = False
     per_gaussian_motion_adjustment_use_flame: bool = False
     per_gaussian_motion_adjustment_use_rigging: bool = False
+    per_gaussian_motion_adjustment_use_sequence: bool = False
+    per_gaussian_motion_adjustment_scale: float = 1e-4
 
     per_gaussian_coloring_adjustment: bool = False
     per_gaussian_coloring_adjustment_use_audio: bool = False
@@ -121,11 +123,16 @@ class DynamicGaussianSplattingSettings:
     per_gaussian_motion_adjustment_use_audio: bool = False
     per_gaussian_motion_adjustment_use_flame: bool = False
     per_gaussian_motion_adjustment_use_rigging: bool = False
+    per_gaussian_motion_adjustment_use_sequence: bool = False
+    per_gaussian_motion_adjustment_start_iteration: int = 3_000  # TODO: implement me
+    per_gaussian_motion_adjustment_scale: float = 1e-4
 
     per_gaussian_coloring_adjustment: bool = False
     per_gaussian_coloring_adjustment_use_audio: bool = False
     per_gaussian_coloring_adjustment_use_flame: bool = False
     per_gaussian_coloring_adjustment_use_rigging: bool = False
+    per_gaussian_coloring_adjustment_use_sequence: bool = False
+    per_gaussian_coloring_adjustment_start_iteration: int = 3_000
 
     spherical_interpolation_mlp: bool = True
 
@@ -151,6 +158,7 @@ class DynamicGaussianSplattingSettings:
     refine_start_iteration: int = 500
     refine_stop_iteration: int | float = 0.5  # should be around 85-90% for mcmc
     cap_max: int = MISSING  # mcmc only
+    refine_every_n_iterations: int = 100
 
     # initialization settings
     initialization_mode: str = MISSING
@@ -186,6 +194,12 @@ class DynamicGaussianSplattingSettings:
     # mcmc
     mcmc_opacity_regularization: float | None = None
     mcmc_scale_regularization: float | None = None
+    mcmc_noise_lr: float = 5e5
+    # 2dgs
+    normal_loss_2dgs: float | None = None
+    normal_loss_2dgs_start_iteration: int = 7_000
+    render_distortion_loss_2dgs: float | None = None
+    render_distortion_loss_2dgs_start_iteration: int = 3_000
 
     # loss kwargs
     lpips_network: str = 'vgg'
@@ -207,6 +221,8 @@ class DynamicGaussianSplattingSettings:
     monocular_view: bool = False
     over_sample_open_jaw: bool = False
     over_sample_probability: float = 0.5
+    over_sample_sequence: int | None = None
+    over_sample_sequence_probability: float = 0.5
     random_background: bool = False
 
 
