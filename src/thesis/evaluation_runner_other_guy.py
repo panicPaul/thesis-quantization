@@ -13,7 +13,6 @@ import bz2
 import lzma
 import time
 from moviepy import VideoFileClip, AudioFileClip, ImageSequenceClip
-from thesis.video_utils import get_audio_path
 from thesis.evaluation import _EvaluationComputer
 import yaml
 from thesis.utils import assign_segmentation_class
@@ -116,7 +115,7 @@ def render_sequence(
     # Load everything from the sequence manager
     model.cuda()
     model.eval()
-    sm = SequenceManager(sequence)
+    sm = SequenceManager(sequence, data_dir='data/085')
     if rigging_params is None:
         flame_params = sm.flame_params[:]
         flame_params = UnbatchedFlameParams(
@@ -132,9 +131,12 @@ def render_sequence(
     windowed_rigging_params = rigging_params
     audio_features = sm.audio_features[:].cuda()
     se3_transforms = sm.se3_transforms[:]
+    translation = se3_transforms.translation.cuda()
+    rotation = se3_transforms.rotation.cuda()
+
     se3_transforms = UnbatchedSE3Transform(
-        translation=se3_transforms.translation.cuda(),
-        rotation=se3_transforms.rotation.cuda(),
+        translation=translation,
+        rotation=rotation,
     )
 
     # Get default intrinsics and world_2_cam
@@ -178,14 +180,13 @@ def render_sequence(
     video_output_dir = os.path.join(output_dir, 'videos')
     os.makedirs(video_output_dir, exist_ok=True)
     video_output_path = os.path.join(video_output_dir, f'sequence_{sequence}.mp4')
-    audio_path = get_audio_path(sequence)
+    audio_path = f'data/085/sequences/sequence_{sequence:04d}/audio/audio_recording.ogg'
     clip_by = (model.gaussian_splatting_settings.prior_window_size - 1) / 30
     save_as_video(
         video=video,
         output_path=video_output_path,
         audio_path=audio_path,
         clip_audio_by=clip_by,
-        fps=24,
     )
 
     # Get the ground truth video
@@ -199,7 +200,6 @@ def render_sequence(
         output_path=gt_video_path,
         audio_path=audio_path,
         clip_audio_by=clip_by,
-        fps=24,
     )
 
     # Save side by side video
@@ -228,7 +228,6 @@ def save_as_video(
     audio_path: str | None = None,
     clip_audio_by: float | None = None,
     fps: int = 30,
-    aac: bool = False,
 ) -> None:
     """ 
     Saves a video to disk. If an audio file is provided, it will be added to the video.
@@ -243,7 +242,6 @@ def save_as_video(
             of time that the video is shorter by. The audio will be clipped by half this amount
             on either side.
     """
-    audio_codec = 'aac' if aac else 'mp3'
 
     # Create video clip from numpy array
     video_clip = ImageSequenceClip([frame for frame in video], fps=fps)
@@ -276,7 +274,7 @@ def save_as_video(
     video_clip.write_videofile(
         output_path,
         codec='libx264',
-        audio_codec=audio_codec if audio_path else None,
+        audio_codec='mp3' if audio_path else None,
         fps=fps,
         preset='veryslow',  # Compression preset: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
         bitrate='5000k')
@@ -299,7 +297,7 @@ def get_gt_video(
         sequence (int): The sequence to load.
         background (torch.Tensor): The background color.
     """
-    sm = SequenceManager(sequence, cameras=[8])
+    sm = SequenceManager(sequence, cameras=[8], data_dir='data/085')
     images = []
 
     for t in tqdm(range(10, sm.n_time_steps - 10), desc="Loading GT video"):
@@ -358,50 +356,32 @@ def evaluate_sequence(
 
 if __name__ == '__main__':
 
-    ablations = [
-        'no_flame_prior',  # 0
-        '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/just_flame_prior/version_0/checkpoints/epoch=2-step=270000.ckpt',  # 1 just vanilla flame 
-        '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/just_flame_prior_inner_mouth/version_0/checkpoints/epoch=2-step=270000.ckpt',  # 2 just flame inner mouth
-        '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/with_per_gaussian/version_0/checkpoints/epoch=2-step=270000.ckpt',  # 3 with per gaussian
-        '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/with_color_mlp/version_0/checkpoints/epoch=2-step=240000.ckpt',  # 4 with color mlp
-        '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/oversample/version_0/checkpoints/epoch=2-step=240000.ckpt',  # 5 oversample
-        'tb_logs/dynamic_gaussian_splatting/ablations_final/with_color_mlp_2dgs/version_0/checkpoints/epoch=2-step=240000.ckpt',  # 6 with 2dgs 
-        '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/2dgs_with_anisotropy_reg/version_2/checkpoints/epoch=2-step=240000.ckpt',  # 7 2dgs with anisotropy reg
-    ]
-
-    # with 2dgs only has 24 for some reason...
-    # i have 2, and 6,, five is out?
-    # model_path = ablations[7]  # missing are 1, 3, 4
-    cur = list(range(2, 8))
-    model_paths = [ablations[i] for i in cur]
-    video_only = False
-    audio = True
-
-    model_paths = [
-        'tb_logs/dynamic_gaussian_splatting/ablations_final/monocular/version_0/checkpoints/epoch=2-step=240000.ckpt'
-    ]
+    model_path = '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/other_guy/version_0/checkpoints/epoch=35-step=240000.ckpt'
+    video_only = True
+    audio = False
 
     # ------------------------------------------------------------------------------------ #
-    for model_path in model_paths:
-        experiment_name = 'flame' if not audio else 'audio'
-        # Load the model
-        model = DynamicGaussianSplatting.load_from_checkpoint(model_path, ckpt_path=model_path)
 
-        # Render the sequence
-        for sequence in range(96, 97):
-            if audio:
-                rigging_params = torch.load(
-                    f'/home/schlack/thesis-quantization/saved_vertex_preds/sequence_{sequence}.pt')
-                # there are always 2 frames missing for some reason... pad with mirror
-                rigging_params = torch.cat(
-                    [rigging_params[:1], rigging_params, rigging_params[-1:]])
-            else:
-                rigging_params = None
-            pred_video = render_sequence(
-                sequence=sequence,
-                model=model,
-                video_only=video_only,
-                experiment=experiment_name,
-                rigging_params=rigging_params,
-                compression='gzip',
-            )
+    experiment_name = 'flame' if not audio else 'audio'
+    # Load the model
+    model = DynamicGaussianSplatting.load_from_checkpoint(model_path, ckpt_path=model_path)
+
+    # Render the sequence
+    for sequence in range(9, 10):
+        if audio:
+            raise NotImplementedError('Audio not implemented yet')
+            rigging_params = torch.load(
+                f'/home/schlack/thesis-quantization/saved_vertex_preds/sequence_{sequence}.pt')
+            # there are always 2 frames missing for some reason... pad with mirror
+            rigging_params = torch.cat([rigging_params[:1], rigging_params, rigging_params[-1:]])
+
+        else:
+            rigging_params = None
+        pred_video = render_sequence(
+            sequence=sequence,
+            model=model,
+            video_only=video_only,
+            experiment=experiment_name,
+            rigging_params=rigging_params,
+            compression='gzip',
+        )

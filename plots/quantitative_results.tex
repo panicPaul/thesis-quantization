@@ -1,0 +1,18 @@
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Method & VDP \ensuremath{\uparrow} & L1 Loss \ensuremath{\downarrow} & LPIPS \ensuremath{\downarrow} & PSNR \ensuremath{\uparrow} & SSIM \ensuremath{\uparrow} \\
+\midrule
+GaussianAvatars & 6.255 & 0.018 & 0.251 & 22.793 & 0.913 \\
+FLAME Prior++ & 6.483 & 0.016 & 0.229 & \cellcolor{yellow!25}24.727 & 0.919 \\
+w/ Per-Gaussian Adjustment & \cellcolor{yellow!25}6.570 & \cellcolor{orange!25}0.015 & \cellcolor{orange!25}0.226 & \cellcolor{green!25}25.024 & \cellcolor{orange!25}0.919 \\
+w/ Color MLP & \cellcolor{green!25}6.573 & \cellcolor{green!25}0.014 & \cellcolor{green!25}0.217 & \cellcolor{orange!25}24.540 & \cellcolor{yellow!25}0.921 \\
+w/ Color MLP \& 2DGS & \cellcolor{orange!25}6.560 & \cellcolor{yellow!25}0.014 & \cellcolor{yellow!25}0.219 & 24.470 & \cellcolor{green!25}0.921 \\
+\bottomrule
+\end{tabular}
+\caption{Quantitative evaluation results. Arrows (\ensuremath{\uparrow}/\ensuremath{\downarrow}) indicate whether higher/lower values are better. 
+Top three results for each metric are highlighted in \textcolor{green!75}{green}, 
+\textcolor{yellow!75}{yellow}, and \textcolor{orange!75}{orange}.}
+\label{tab:quantitative_results}
+\end{table}

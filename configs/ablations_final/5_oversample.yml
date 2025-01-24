@@ -108,10 +108,10 @@ gaussian_splatting_settings:
   log_images_interval: 250
   shuffle_train_data: true # keep at true, trade-off not worth it
   over_sample_open_jaw: true
-  over_sample_probability: 0.5
+  over_sample_probability: 0.7
 
   over_sample_sequence: 3
-  over_sample_sequence_probability: 0.5
+  over_sample_sequence_probability: 0.3
 #   image_downsampling_factor: 2.0
   random_background: true
 

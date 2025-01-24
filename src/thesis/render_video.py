@@ -433,13 +433,13 @@ def render_gt_video(
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         out.write(image)
     out.release()
-    add_audio(  # adds a frame here for some reason in edge cases
-        video_path=output_path,
-        audio_path=audio_path,
-        fps=fps,
-        quicktime_compatible=quicktime_compatible,
-        trim_to_fit=True,
-    )
+    # add_audio(  # adds a frame here for some reason in edge cases
+    #     video_path=output_path,
+    #     audio_path=audio_path,
+    #     fps=fps,
+    #     quicktime_compatible=quicktime_compatible,
+    #     trim_to_fit=True,
+    # )
 
 
 def main(
@@ -568,14 +568,14 @@ def main(
         out.write(image)
 
     out.release()
-    add_audio(
-        video_path=output_path,
-        audio_path=audio_path,
-        fps=fps,
-        quicktime_compatible=quicktime_compatible,
-        trim_to_fit=True,
-    )
-    change_audio_codec_to_aac(output_path)
+    # add_audio(
+    #     video_path=output_path,
+    #     audio_path=audio_path,
+    #     fps=fps,
+    #     quicktime_compatible=quicktime_compatible,
+    #     trim_to_fit=True,
+    # )
+    # change_audio_codec_to_aac(output_path)
 
 
 # ============================================================================================== #
@@ -602,7 +602,8 @@ if __name__ == '__main__':
     background_color = torch.tensor([1.0, 1.0, 1.0]).cuda() * 1.0
 
     # gs checkpoint
-    gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/ablations_final/with_2dgs/version_0/checkpoints/epoch=2-step=240000.ckpt'
+    # gaussian_splats_checkpoint = 'tb_logs/dynamic_gaussian_splatting/ablations_final/with_2dgs/version_0/checkpoints/epoch=2-step=240000.ckpt'
+    gaussian_splats_checkpoint = '/home/schlack/thesis-quantization/tb_logs/dynamic_gaussian_splatting/ablations_final/with_color_mlp_2dgs/version_0/checkpoints/epoch=2-step=240000.ckpt'
 
     # Parse overridable arguments
     parser = argparse.ArgumentParser()

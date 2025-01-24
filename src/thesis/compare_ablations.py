@@ -191,16 +191,18 @@ def main():
     # Base path where experiment directories are located
     base_path = 'ablations/ablations_final'
     experiment_names = [
-        'gaussian_avatars',  # baseline
-        # 'no_flame_prior', # 0
-        # 'just_flame_prior',  # 1
-        'just_flame_prior_inner_mouth',  # 2
-        'with_per_gaussian',  # 3
-        'with_color_mlp',  # 4
+        # 'gaussian_avatars',  # baseline
+        # # 'no_flame_prior', # 0
+        # # 'just_flame_prior',  # 1
+        # 'just_flame_prior_inner_mouth',  # 2
+        # 'with_per_gaussian',  # 3
+        # 'with_color_mlp',  # 4
         'with_color_mlp_2dgs',  # 5
         # 'oversample',  # 6
+        # '2dgs_with_anisotropy_reg'
+        'monocular',  # 7
     ]
-    type = 'audio'
+    type = 'flame'
     experiment_names_audio = [f'{name}/audio' for name in experiment_names]
     # experiment_names_flame = [f'{name}/flame' for name in experiment_names]
     experiment_names = experiment_names_audio  # + experiment_names_flame

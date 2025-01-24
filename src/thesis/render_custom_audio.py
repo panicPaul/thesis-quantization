@@ -23,6 +23,7 @@ def render_custom_audio(
     world_2_cam: Float[torch.Tensor, 'time 4 4'] | None = None,
     compression: Literal['gzip', 'bz2', 'lzma'] = 'lzma',
     video_only: bool = True,
+    aac: bool = False,
 ) -> None:
 
     rigging_params = torch.load(rigging_param_path).cuda()
@@ -51,7 +52,7 @@ def render_custom_audio(
         intrinsics = intrinsics.repeat(audio_features.shape[0], 1, 1)
     intrinsics = intrinsics.cuda()
     if world_2_cam is None:
-        world_2_cam = torch.tensor([[0.9058, -0.2462, -0.3448, -0.0859],
+        world_2_cam = torch.tensor([[0.058, -0.2462, -0.3448, -0.0859],
                                     [-0.0377, -0.8575, 0.5131, 0.1364],
                                     [-0.4220, -0.4518, -0.7860, 1.0642],
                                     [0.0000, 0.0000, 0.0000, 1.0000]])
@@ -85,6 +86,7 @@ def render_custom_audio(
         output_path=output_path,
         audio_path=audio_path,
         clip_audio_by=clip_by,
+        aac=aac,
     )
 
 
@@ -93,11 +95,12 @@ if __name__ == '__main__':
 
     model_path = 'tb_logs/dynamic_gaussian_splatting/ablations_final/with_color_mlp_2dgs/version_0/checkpoints/epoch=2-step=240000.ckpt'
 
-    # audio_path = '/home/schlack/CodeTalker/demo/wav/man.wav'
-    audio_path = '/home/schlack/CodeTalker/quick_brown_fox.m4a'
-    rigging_param_path = 'saved_vertex_preds/custom2.pt'
-    output_path = 'custom3.mp4'
+    audio_path = '/home/schlack/CodeTalker/demo/wav/man.wav'
+    # audio_path = '/home/schlack/CodeTalker/quick_brown_fox.m4a'
+    rigging_param_path = 'saved_vertex_preds/custom.pt'  # custom is vocaset, custom2 is quick brown fox (I think)
+    output_path = 'custom_vocaset.mp4'
     model = DynamicGaussianSplatting.load_from_checkpoint(model_path, ckpt_path=model_path)
+    aac = True
 
     render_custom_audio(
         model=model,
@@ -105,4 +108,5 @@ if __name__ == '__main__':
         rigging_param_path=rigging_param_path,
         output_path=output_path,
         video_only=True,
+        aac=aac,
     )
